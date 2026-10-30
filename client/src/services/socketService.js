@@ -1,0 +1,155 @@
+import { io } from 'socket.io-client';
+
+class SocketService {
+  constructor() {
+    this.socket = null;
+    const envUrl = (import.meta.env.VITE_SERVER_URL || '').trim().replace(/\/+$/, '');
+
+    this.serverUrl = envUrl || (
+      typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+        ? 'http://localhost:5000'
+        : (typeof window !== 'undefined' ? window.location.origin : '')
+    );
+  }
+
+  connect() {
+    if (this.socket && this.socket.connected) {
+      return this.socket;
+    }
+
+    this.socket = io(this.serverUrl, {
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+      timeout: 10000,
+    });
+
+    return this.socket;
+  }
+
+  getSocket() {
+    if (!this.socket) {
+      return this.connect();
+    }
+    return this.socket;
+  }
+
+  disconnect() {
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+    }
+  }
+
+  // --- Client-to-server action methods with Promise wrappers ---
+
+  joinRoom({ roomId, name, isCreating = false, initialVideoId = null, participantId = null }) {
+    const socket = this.getSocket();
+    return new Promise((resolve) => {
+      socket.emit('join_room', { roomId, name, isCreating, initialVideoId, participantId }, (response) => {
+        resolve(response);
+      });
+    });
+  }
+
+  leaveRoom(roomId) {
+    const socket = this.getSocket();
+    return new Promise((resolve) => {
+      socket.emit('leave_room', { roomId }, (response) => {
+        resolve(response);
+      });
+    });
+  }
+
+  play(currentTime) {
+    const socket = this.getSocket();
+    return new Promise((resolve) => {
+      socket.emit('play', { currentTime }, (response) => {
+        resolve(response);
+      });
+    });
+  }
+
+  pause(currentTime) {
+    const socket = this.getSocket();
+    return new Promise((resolve) => {
+      socket.emit('pause', { currentTime }, (response) => {
+        resolve(response);
+      });
+    });
+  }
+
+  seek(currentTime) {
+    const socket = this.getSocket();
+    return new Promise((resolve) => {
+      socket.emit('seek', { currentTime }, (response) => {
+        resolve(response);
+      });
+    });
+  }
+
+  changeVideo(url, videoId) {
+    const socket = this.getSocket();
+    return new Promise((resolve) => {
+      socket.emit('change_video', { url, videoId }, (response) => {
+        resolve(response);
+      });
+    });
+  }
+
+  requestAction(action, payload) {
+    const socket = this.getSocket();
+    return new Promise((resolve) => {
+      socket.emit('request_action', { action, payload }, (response) => {
+        resolve(response);
+      });
+    });
+  }
+
+  approveRequest(requestId) {
+    const socket = this.getSocket();
+    return new Promise((resolve) => {
+      socket.emit('approve_request', { requestId }, (response) => {
+        resolve(response);
+      });
+    });
+  }
+
+  rejectRequest(requestId) {
+    const socket = this.getSocket();
+    return new Promise((resolve) => {
+      socket.emit('reject_request', { requestId }, (response) => {
+        resolve(response);
+      });
+    });
+  }
+
+  assignRole(targetParticipantId, newRole) {
+    const socket = this.getSocket();
+    return new Promise((resolve) => {
+      socket.emit('assign_role', { targetParticipantId, newRole }, (response) => {
+        resolve(response);
+      });
+    });
+  }
+
+  removeParticipant(targetParticipantId) {
+    const socket = this.getSocket();
+    return new Promise((resolve) => {
+      socket.emit('remove_participant', { targetParticipantId }, (response) => {
+        resolve(response);
+      });
+    });
+  }
+
+  sendChat(text) {
+    const socket = this.getSocket();
+    return new Promise((resolve) => {
+      socket.emit('send_chat', { text }, (response) => {
+        resolve(response);
+      });
+    });
+  }
+}
+
+export const socketService = new SocketService();
