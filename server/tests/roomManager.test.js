@@ -317,4 +317,20 @@ describe('RoomManager Unit Tests', () => {
     expect(room.hostId).toBe(alice.id);
     expect(room.participants.get(alice.id)).toBeDefined();
   });
+
+  test('Disconnect sets participant offline and reconnect within grace period clears disconnect timer', () => {
+    const { room, host: alice } = roomManager.createRoom('Alice', 'socket_alice_disc');
+    const { participant: bob } = roomManager.joinRoom(room.roomId, 'Bob', 'socket_bob_disc');
+
+    // Bob disconnects
+    const discRes = roomManager.handleDisconnect('socket_bob_disc');
+    expect(discRes.participant.isOnline).toBe(false);
+    expect(roomManager.disconnectTimers.has(bob.id)).toBe(true);
+
+    // Bob reconnects with new socket ID before grace period expires
+    const reconnRes = roomManager.joinRoom(room.roomId, 'Bob', 'socket_bob_new', bob.id);
+    expect(reconnRes.success).toBe(true);
+    expect(reconnRes.participant.isOnline).toBe(true);
+    expect(roomManager.disconnectTimers.has(bob.id)).toBe(false);
+  });
 });

@@ -99,9 +99,11 @@ export function RoomProvider({ children }) {
 
     const onRoleAssigned = (data) => {
       showToast(data.message, 'info');
-      if (data.targetParticipant?.id === currentUser?.id) {
-        showToast(`Your role changed to ${data.targetParticipant.role}!`, 'success');
-        setCurrentUser((prev) => ({ ...prev, role: data.targetParticipant.role }));
+      const targetId = data.targetParticipant?.id || data.userId;
+      const targetRole = data.targetParticipant?.role || data.role;
+      if (targetId === currentUser?.id) {
+        showToast(`Your role changed to ${targetRole}! 👑`, 'success');
+        setCurrentUser((prev) => ({ ...prev, role: targetRole }));
       }
     };
 
@@ -243,8 +245,12 @@ export function RoomProvider({ children }) {
   }, []);
 
   const assignRole = useCallback(async (targetParticipantId, newRole) => {
-    return await socketService.assignRole(targetParticipantId, newRole);
-  }, []);
+    const res = await socketService.assignRole(targetParticipantId, newRole);
+    if (res?.success && newRole === 'host') {
+      showToast('Host role transferred successfully! You are now a Moderator.', 'success');
+    }
+    return res;
+  }, [showToast]);
 
   const removeParticipant = useCallback(async (targetParticipantId) => {
     return await socketService.removeParticipant(targetParticipantId);

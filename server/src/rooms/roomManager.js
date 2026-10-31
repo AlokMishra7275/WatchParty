@@ -86,6 +86,10 @@ class RoomManager {
     return {
       roomId: room.roomId,
       hostId: room.hostId,
+      // Assignment PDF compatibility aliases at top level
+      playState: room.playback.status,
+      currentTime: authoritativeTime,
+      videoId: room.playback.videoId,
       playback: {
         videoId: room.playback.videoId,
         status: room.playback.status,

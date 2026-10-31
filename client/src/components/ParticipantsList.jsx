@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ShieldCheck, ShieldAlert, UserMinus } from 'lucide-react';
+import { ShieldCheck, ShieldAlert, UserMinus, Crown } from 'lucide-react';
 import { RoleBadge } from './RoleBadge';
 
 export function ParticipantsList({
@@ -10,6 +10,7 @@ export function ParticipantsList({
   onRemoveParticipant,
 }) {
   const [confirmRemoveId, setConfirmRemoveId] = useState(null);
+  const [confirmTransferHostId, setConfirmTransferHostId] = useState(null);
 
   return (
     <div className="flex flex-col h-full transition-colors duration-200">
@@ -66,8 +67,27 @@ export function ParticipantsList({
               {/* Right: Host Actions (Cannot act on self) */}
               {isHost && !isSelf && (
                 <div className="relative flex items-center gap-1">
-                  {confirmRemoveId === p.id ? (
-                    <div className="flex items-center gap-1 theme-card border border-red-500/40 p-1 rounded-lg shadow-sm">
+                  {confirmTransferHostId === p.id ? (
+                    <div className="flex items-center gap-1 theme-card border border-amber-500/40 p-1 rounded-lg shadow-sm animate-in fade-in">
+                      <span className="text-[10px] text-amber-600 dark:text-amber-400 font-bold px-1">Make Host?</span>
+                      <button
+                        onClick={() => {
+                          onAssignRole(p.id, 'host');
+                          setConfirmTransferHostId(null);
+                        }}
+                        className="px-1.5 py-0.5 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold rounded cursor-pointer"
+                      >
+                        Yes
+                      </button>
+                      <button
+                        onClick={() => setConfirmTransferHostId(null)}
+                        className="px-1.5 py-0.5 bg-[var(--bg-card-subtle)] text-[var(--text-muted)] hover:text-[var(--text-main)] text-[10px] rounded cursor-pointer"
+                      >
+                        No
+                      </button>
+                    </div>
+                  ) : confirmRemoveId === p.id ? (
+                    <div className="flex items-center gap-1 theme-card border border-red-500/40 p-1 rounded-lg shadow-sm animate-in fade-in">
                       <span className="text-[10px] text-red-600 dark:text-red-400 font-bold px-1">Remove?</span>
                       <button
                         onClick={() => {
@@ -87,6 +107,18 @@ export function ParticipantsList({
                     </div>
                   ) : (
                     <>
+                      {/* Transfer Host Button */}
+                      <button
+                        onClick={() => {
+                          setConfirmRemoveId(null);
+                          setConfirmTransferHostId(p.id);
+                        }}
+                        className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-amber-500 dark:hover:text-amber-400 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                        title="Transfer Host to this participant"
+                      >
+                        <Crown size={14} />
+                      </button>
+
                       {/* Promote/Demote quick button */}
                       {isUserMod ? (
                         <button
@@ -108,7 +140,10 @@ export function ParticipantsList({
 
                       {/* Remove Button */}
                       <button
-                        onClick={() => setConfirmRemoveId(p.id)}
+                        onClick={() => {
+                          setConfirmTransferHostId(null);
+                          setConfirmRemoveId(p.id);
+                        }}
                         className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-red-600 dark:hover:text-red-400 hover:bg-[var(--bg-card-hover)] transition-colors cursor-pointer"
                         title="Remove participant from room"
                       >

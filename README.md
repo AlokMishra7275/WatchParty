@@ -2,8 +2,9 @@
 
 A modern, production-ready, full-stack web application that allows multiple users across the globe to watch YouTube videos together in real time with authoritative synchronization, role-based governance (Host, Moderator, Participant), participant approval queues, room isolation, and live chat.
 
-> **Live Application Demo:** `https://watchparty-production-live.vercel.app` *(Placeholder — replace with your production URL upon deployment)*  
-> **Backend Service:** `https://watchparty-api.onrender.com` *(Placeholder)*
+> **Live Frontend Application:** [https://watch-party-blush-eight.vercel.app/](https://watch-party-blush-eight.vercel.app/)  
+> **Live Backend API & WebSocket Service:** [https://watchparty-backend-zk7i.onrender.com/](https://watchparty-backend-zk7i.onrender.com/)  
+> **Health Check Endpoint:** [https://watchparty-backend-zk7i.onrender.com/api/health](https://watchparty-backend-zk7i.onrender.com/api/health)
 
 ---
 
@@ -280,15 +281,15 @@ All real-time communication occurs over Socket.IO. Identity is established via s
 
 | Event | Payload | Auth / Role Required | Description |
 |---|---|---|---|
-| `join_room` | `{ roomId, name, isCreating, initialVideoId }` | Anyone | Create a new room as Host or join existing room as Participant. |
+| `join_room` | `{ roomId, name, username, isCreating, initialVideoId }` | Anyone | Create a new room as Host or join existing room as Participant. Supports both `name` and `username`. |
 | `leave_room` | `{ roomId }` | Room member | Gracefully leaves the room and triggers host transfer if Host leaves. |
-| `play` | `{ currentTime }` | Host or Moderator | Broadcasts play status from the requested time. |
-| `pause` | `{ currentTime }` | Host or Moderator | Pauses video for everyone at the given time. |
-| `seek` | `{ currentTime }` | Host or Moderator | Seeks all room members to target position. |
-| `change_video`| `{ url, videoId }` | Host or Moderator | Loads a new YouTube video for all participants. |
-| `assign_role` | `{ targetParticipantId, newRole }` | Host only | Promotes participant to Moderator or demotes to Participant. |
-| `remove_participant` | `{ targetParticipantId }` | Host only | Expels a participant from the room. |
-| `request_action` | `{ action, payload }` | Participant | Submits a playback action request for approval. |
+| `play` | `{ currentTime, time }` | Host or Moderator | Broadcasts play status from the requested time. Supports `time` and `currentTime`. |
+| `pause` | `{ currentTime, time }` | Host or Moderator | Pauses video for everyone at the given time. Supports `time` and `currentTime`. |
+| `seek` | `{ currentTime, time }` | Host or Moderator | Seeks all room members to target position. Supports `time` and `currentTime`. |
+| `change_video`| `{ url, videoId }` | Host or Moderator | Loads a new YouTube video for all participants (also aliased as `video:change`). |
+| `assign_role` | `{ targetParticipantId, userId, newRole, role }` | Host only | Promotes participant to Moderator, demotes to Participant, or transfers Host role. Supports `userId` and `role`. |
+| `remove_participant` | `{ targetParticipantId, userId }` | Host only | Expels a participant from the room. Supports `userId` alias. |
+| `request_action` | `{ action, payload }` | Participant | Submits a playback action request for approval (also aliased as `video:request`). |
 | `approve_request` | `{ requestId }` | Host or Moderator | Approves request and executes playback action. |
 | `reject_request` | `{ requestId }` | Host or Moderator | Rejects a pending request. |
 | `send_chat` | `{ text }` | Room member | Sends a room-scoped chat message. |
@@ -297,7 +298,7 @@ All real-time communication occurs over Socket.IO. Identity is established via s
 
 | Event | Payload | Description |
 |---|---|---|
-| `sync_state` | Authoritative room state object | Complete state broadcast whenever video, status, or participants change. |
+| `sync_state` | Authoritative room state object (with top-level `playState`, `currentTime`, `videoId`) | Complete state broadcast whenever video, status, or participants change. |
 | `user_joined` | `{ participant, message, syncState }` | Notifies room members that a new user joined. |
 | `user_left` | `{ participant, newHostAssigned, newHost, message }` | Notifies room that a user left. |
 | `role_assigned` | `{ targetParticipant, assignedBy, message }` | Broadcasts role promotion/demotion. |
@@ -325,11 +326,17 @@ All real-time communication occurs over Socket.IO. Identity is established via s
 | Force Re-sync | Yes | Yes | Yes |
 
 ### Host Continuity & Transfer Logic
-When the Host leaves or closes the tab:
-1. If active Moderators exist in the room, the earliest-joined Moderator is promoted to Host.
-2. If no Moderators exist, the earliest-joined Participant is promoted to Host.
-3. The server broadcasts the new host identity via `user_left` and `sync_state`.
-4. If the last user leaves, the room is deleted from memory.
+1. **Explicit Host Transfer**: The active Host can transfer the Host crown directly to any other room member in the Participants list. The previous host becomes a Moderator.
+2. **Automatic Host Succession**: If the Host leaves or closes the tab:
+   - If active Moderators exist in the room, the earliest-joined Moderator is promoted to Host.
+   - If no Moderators exist, the earliest-joined Participant is promoted to Host.
+   - The server broadcasts the new host identity via `user_left`, `role_assigned`, and `sync_state`.
+
+### Room Lifecycle & Disconnection Handling
+- **Temporary Network Disconnects (3-Minute Grace Period)**: When a user disconnects abruptly (WiFi drop, tab reload), they are marked `isOnline: false` while their room membership and role are preserved for 3 minutes. If they reconnect within this window, their session and role (including Host) are seamlessly restored.
+- **Empty Room Cleanup (5-Minute Expiration)**: When all participants leave a room, a 5-minute cleanup timer begins. If no participant returns within 5 minutes, the room is deleted from server memory to prevent memory leaks.
+- **Backend Restarts**: Because rooms are managed in-memory by `RoomManager` (as permitted for the MVP), active rooms reset if the server process restarts.
+- **Room Validation**: The REST endpoint `/api/rooms/:roomId/validate` checks room existence and participant count before a user attempts to join, returning an informative 404 message if the room does not exist or has expired.
 
 ---
 
@@ -384,11 +391,11 @@ npm test
 Expected output:
 ```text
 PASS tests/socketIntegration.test.js
-PASS tests/theme.test.js
 PASS tests/roomManager.test.js
+PASS tests/theme.test.js
 
 Test Suites: 3 passed, 3 total
-Tests:       32 passed, 32 total
+Tests:       48 passed, 48 total
 ```
 
 ### Verifying Frontend Production Build
@@ -421,9 +428,9 @@ Expected output:
 5. In **Environment Variables**, add:
    - `PORT`: `5000` (or leave to Render's default `$PORT`)
    - `NODE_ENV`: `production`
-   - `CLIENT_URL`: `https://your-frontend-app.vercel.app` (your Vercel app URL)
+   - `CLIENT_URL`: `https://watch-party-blush-eight.vercel.app` (your Vercel app URL)
 6. Click **Deploy Web Service**.
-7. Note down your Render backend URL (e.g., `https://watchparty-api.onrender.com`).
+7. Your live Render backend URL is: `https://watchparty-backend-zk7i.onrender.com`
 
 ### Frontend Deployment (Vercel)
 
@@ -436,9 +443,9 @@ Expected output:
    - **Build Command**: `npm run build`
    - **Output Directory**: `dist`
 5. In **Environment Variables**, add:
-   - `VITE_SERVER_URL`: `https://watchparty-api.onrender.com` (your deployed Render URL)
+   - `VITE_SERVER_URL`: `https://watchparty-backend-zk7i.onrender.com` (your deployed Render URL)
 6. Click **Deploy**.
-7. Once deployed, update your Render `CLIENT_URL` environment variable to match your live Vercel domain.
+7. Once deployed, verify your live frontend URL at `https://watch-party-blush-eight.vercel.app/`.
 
 ---
 

@@ -6,14 +6,26 @@
 function setupSocketHandlers(io, roomManager) {
   io.on('connection', (socket) => {
     // 1. JOIN ROOM
-    socket.on('join_room', ({ roomId, name, isCreating = false, initialVideoId = null, participantId = null }, callback) => {
+    socket.on('join_room', (payload = {}, callback) => {
       try {
+        const {
+          roomId,
+          name,
+          username,
+          isCreating = false,
+          initialVideoId = null,
+          participantId = null,
+          userId = null,
+        } = payload;
+        const displayName = (name || username || '').trim();
+        const effectiveParticipantId = participantId || userId || null;
+
         let room;
         let participant;
 
         if (isCreating) {
           // Creating a new room
-          const result = roomManager.createRoom(name, socket.id, initialVideoId);
+          const result = roomManager.createRoom(displayName, socket.id, initialVideoId);
           room = result.room;
           participant = result.host;
         } else {
@@ -25,7 +37,7 @@ function setupSocketHandlers(io, roomManager) {
             return;
           }
 
-          const result = roomManager.joinRoom(roomId.trim(), name, socket.id, participantId);
+          const result = roomManager.joinRoom(roomId.trim(), displayName, socket.id, effectiveParticipantId);
           if (!result.success) {
             if (typeof callback === 'function') callback({ success: false, error: result.error });
             socket.emit('error_message', { error: result.error });
@@ -45,6 +57,9 @@ function setupSocketHandlers(io, roomManager) {
             success: true,
             roomId: room.roomId,
             participant,
+            userId: participant.id,
+            username: participant.name,
+            role: participant.role,
             syncState: roomManager.getSyncState(room),
             chatHistory: room.chatMessages.slice(-50),
           });
@@ -53,6 +68,16 @@ function setupSocketHandlers(io, roomManager) {
         // Broadcast to everyone else in the room that a user joined
         socket.to(room.roomId).emit('user_joined', {
           participant,
+          userId: participant.id,
+          username: participant.name,
+          role: participant.role,
+          participants: Array.from(room.participants.values()).map(p => ({
+            id: p.id,
+            name: p.name,
+            role: p.role,
+            isOnline: p.isOnline,
+            joinedAt: p.joinedAt,
+          })),
           message: `${participant.name} joined the watch party.`,
           syncState: roomManager.getSyncState(room),
         });
@@ -66,7 +91,7 @@ function setupSocketHandlers(io, roomManager) {
     });
 
     // 2. PLAY
-    socket.on('play', ({ currentTime } = {}, callback) => {
+    socket.on('play', (payload = {}, callback) => {
       const info = roomManager.getParticipantBySocket(socket.id);
       if (!info) {
         const error = 'Not joined in any active room.';
@@ -75,8 +100,12 @@ function setupSocketHandlers(io, roomManager) {
         return;
       }
 
+      const targetTime = typeof payload?.currentTime === 'number'
+        ? payload.currentTime
+        : (typeof payload?.time === 'number' ? payload.time : undefined);
+
       const { room } = info;
-      const result = roomManager.updatePlayback(room.roomId, 'play', { currentTime }, socket.id);
+      const result = roomManager.updatePlayback(room.roomId, 'play', { currentTime: targetTime }, socket.id);
 
       if (!result.success) {
         if (typeof callback === 'function') callback({ success: false, error: result.error, requiresApproval: result.requiresApproval });
@@ -89,7 +118,7 @@ function setupSocketHandlers(io, roomManager) {
     });
 
     // 3. PAUSE
-    socket.on('pause', ({ currentTime } = {}, callback) => {
+    socket.on('pause', (payload = {}, callback) => {
       const info = roomManager.getParticipantBySocket(socket.id);
       if (!info) {
         const error = 'Not joined in any active room.';
@@ -98,8 +127,12 @@ function setupSocketHandlers(io, roomManager) {
         return;
       }
 
+      const targetTime = typeof payload?.currentTime === 'number'
+        ? payload.currentTime
+        : (typeof payload?.time === 'number' ? payload.time : undefined);
+
       const { room } = info;
-      const result = roomManager.updatePlayback(room.roomId, 'pause', { currentTime }, socket.id);
+      const result = roomManager.updatePlayback(room.roomId, 'pause', { currentTime: targetTime }, socket.id);
 
       if (!result.success) {
         if (typeof callback === 'function') callback({ success: false, error: result.error, requiresApproval: result.requiresApproval });
@@ -112,7 +145,7 @@ function setupSocketHandlers(io, roomManager) {
     });
 
     // 4. SEEK
-    socket.on('seek', ({ currentTime }, callback) => {
+    socket.on('seek', (payload = {}, callback) => {
       const info = roomManager.getParticipantBySocket(socket.id);
       if (!info) {
         const error = 'Not joined in any active room.';
@@ -121,8 +154,19 @@ function setupSocketHandlers(io, roomManager) {
         return;
       }
 
+      const targetTime = typeof payload?.currentTime === 'number'
+        ? payload.currentTime
+        : (typeof payload?.time === 'number' ? payload.time : null);
+
+      if (targetTime === null || typeof targetTime !== 'number' || targetTime < 0) {
+        const error = 'Invalid seek position';
+        if (typeof callback === 'function') callback({ success: false, error });
+        socket.emit('error_message', { error });
+        return;
+      }
+
       const { room } = info;
-      const result = roomManager.updatePlayback(room.roomId, 'seek', { currentTime }, socket.id);
+      const result = roomManager.updatePlayback(room.roomId, 'seek', { currentTime: targetTime }, socket.id);
 
       if (!result.success) {
         if (typeof callback === 'function') callback({ success: false, error: result.error, requiresApproval: result.requiresApproval });
@@ -185,6 +229,9 @@ function setupSocketHandlers(io, roomManager) {
       const resolvedPayload = { ...payload };
       if (url && !resolvedPayload.url) resolvedPayload.url = url;
       if (videoId && !resolvedPayload.videoId) resolvedPayload.videoId = videoId;
+      if (resolvedAction === 'seek' && typeof resolvedPayload.time === 'number' && resolvedPayload.currentTime === undefined) {
+        resolvedPayload.currentTime = resolvedPayload.time;
+      }
 
       const { room } = info;
       const result = roomManager.requestAction(room.roomId, resolvedAction, resolvedPayload, socket.id);
@@ -302,7 +349,7 @@ function setupSocketHandlers(io, roomManager) {
     socket.on('video:request:reject', handleRejectRequest);
 
     // 9. ASSIGN ROLE
-    socket.on('assign_role', ({ targetParticipantId, newRole }, callback) => {
+    socket.on('assign_role', (payload = {}, callback) => {
       const info = roomManager.getParticipantBySocket(socket.id);
       if (!info) {
         const error = 'Not joined in any active room.';
@@ -311,8 +358,18 @@ function setupSocketHandlers(io, roomManager) {
         return;
       }
 
+      const targetId = payload?.targetParticipantId || payload?.userId;
+      const roleToSet = payload?.newRole || payload?.role;
+
+      if (!targetId || !roleToSet) {
+        const error = 'Target participant ID and new role are required.';
+        if (typeof callback === 'function') callback({ success: false, error });
+        socket.emit('error_message', { error });
+        return;
+      }
+
       const { room } = info;
-      const result = roomManager.assignRole(room.roomId, targetParticipantId, newRole, socket.id);
+      const result = roomManager.assignRole(room.roomId, targetId, roleToSet, socket.id);
 
       if (!result.success) {
         if (typeof callback === 'function') callback({ success: false, error: result.error });
@@ -320,11 +377,30 @@ function setupSocketHandlers(io, roomManager) {
         return;
       }
 
-      if (typeof callback === 'function') callback({ success: true, targetParticipant: result.targetParticipant });
+      const responsePayload = {
+        success: true,
+        targetParticipant: result.targetParticipant,
+        userId: result.targetParticipant.id,
+        role: result.targetParticipant.role,
+        newRole: result.targetParticipant.role,
+      };
+
+      if (typeof callback === 'function') callback(responsePayload);
 
       io.to(room.roomId).emit('role_assigned', {
         targetParticipant: result.targetParticipant,
+        userId: result.targetParticipant.id,
+        username: result.targetParticipant.name,
+        role: result.targetParticipant.role,
+        newRole: result.targetParticipant.role,
         assignedBy: result.assignedBy,
+        participants: Array.from(room.participants.values()).map(p => ({
+          id: p.id,
+          name: p.name,
+          role: p.role,
+          isOnline: p.isOnline,
+          joinedAt: p.joinedAt,
+        })),
         message: `${result.targetParticipant.name} is now a ${result.targetParticipant.role}.`,
       });
 
@@ -332,7 +408,7 @@ function setupSocketHandlers(io, roomManager) {
     });
 
     // 10. REMOVE PARTICIPANT
-    socket.on('remove_participant', ({ targetParticipantId }, callback) => {
+    socket.on('remove_participant', (payload = {}, callback) => {
       const info = roomManager.getParticipantBySocket(socket.id);
       if (!info) {
         const error = 'Not joined in any active room.';
@@ -341,8 +417,16 @@ function setupSocketHandlers(io, roomManager) {
         return;
       }
 
+      const targetId = payload?.targetParticipantId || payload?.userId;
+      if (!targetId) {
+        const error = 'Target participant ID is required.';
+        if (typeof callback === 'function') callback({ success: false, error });
+        socket.emit('error_message', { error });
+        return;
+      }
+
       const { room } = info;
-      const result = roomManager.removeParticipant(room.roomId, targetParticipantId, socket.id);
+      const result = roomManager.removeParticipant(room.roomId, targetId, socket.id);
 
       if (!result.success) {
         if (typeof callback === 'function') callback({ success: false, error: result.error });
@@ -352,14 +436,24 @@ function setupSocketHandlers(io, roomManager) {
 
       if (typeof callback === 'function') callback({ success: true });
 
+      const participantsList = Array.from(room.participants.values()).map(p => ({
+        id: p.id,
+        name: p.name,
+        role: p.role,
+        isOnline: p.isOnline,
+        joinedAt: p.joinedAt,
+      }));
+
       // Notify the removed participant specifically if their socket is active
       const removedSocketId = result.removedParticipant.socketId;
       if (removedSocketId && io.sockets.sockets.get(removedSocketId)) {
         const targetSocket = io.sockets.sockets.get(removedSocketId);
         targetSocket.leave(room.roomId);
         targetSocket.emit('participant_removed', {
-          targetParticipantId,
+          targetParticipantId: targetId,
+          userId: targetId,
           removedParticipant: result.removedParticipant,
+          participants: participantsList,
           message: 'You have been removed from the watch party by the host.',
           isSelf: true,
         });
@@ -367,8 +461,10 @@ function setupSocketHandlers(io, roomManager) {
 
       // Notify the remaining room participants
       io.to(room.roomId).emit('participant_removed', {
-        targetParticipantId,
+        targetParticipantId: targetId,
+        userId: targetId,
         removedParticipant: result.removedParticipant,
+        participants: participantsList,
         message: `${result.removedParticipant.name} was removed by the host.`,
         isSelf: false,
       });
@@ -457,8 +553,19 @@ function handleUserLeave(socket, io, roomManager, callback) {
 
   if (typeof callback === 'function') callback({ success: true });
 
+  const participantsList = Array.from(room.participants.values()).map(p => ({
+    id: p.id,
+    name: p.name,
+    role: p.role,
+    isOnline: p.isOnline,
+    joinedAt: p.joinedAt,
+  }));
+
   io.to(room.roomId).emit('user_left', {
     participant,
+    userId: participant.id,
+    username: participant.name,
+    participants: participantsList,
     newHostAssigned,
     newHost,
     message: `${participant.name} left the room.${newHostAssigned ? ` ${newHost.name} is now the host.` : ''}`,

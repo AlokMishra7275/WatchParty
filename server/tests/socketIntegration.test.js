@@ -500,6 +500,88 @@ describe('Socket.IO Real-time Integration & REST Tests', () => {
     expect(receivedChat.message.senderName).toBe('Alice');
   });
 
+  test('Socket payload compatibility: username, time, userId/role, remove userId, and host transfer', async () => {
+    const host = await createConnectedClient();
+    const guest = await createConnectedClient();
+
+    // 1. Host creates room using username alias
+    const createRes = await emitWithAck(host, 'join_room', {
+      username: 'CompatHost',
+      isCreating: true,
+      initialVideoId: 'dQw4w9WgXcQ',
+    });
+    expect(createRes.success).toBe(true);
+    expect(createRes.syncState.playState).toBeDefined();
+    expect(createRes.syncState.currentTime).toBeDefined();
+    expect(createRes.syncState.videoId).toBe('dQw4w9WgXcQ');
+
+    const roomId = createRes.roomId;
+
+    // 2. Guest joins using username alias; host listens for user_joined with userId & username
+    const hostUserJoinedPromise = new Promise((resolve) => {
+      host.once('user_joined', (data) => resolve(data));
+    });
+
+    const joinRes = await emitWithAck(guest, 'join_room', {
+      roomId,
+      username: 'CompatGuest',
+    });
+    expect(joinRes.success).toBe(true);
+    expect(joinRes.username).toBe('CompatGuest');
+    expect(joinRes.userId).toBeDefined();
+
+    const hostJoinedEvent = await hostUserJoinedPromise;
+    expect(hostJoinedEvent.username).toBe('CompatGuest');
+    expect(hostJoinedEvent.userId).toBe(joinRes.userId);
+    expect(Array.isArray(hostJoinedEvent.participants)).toBe(true);
+
+    // 3. Host seeks using time alias
+    const seekRes = await emitWithAck(host, 'seek', { time: 42 });
+    expect(seekRes.success).toBe(true);
+
+    // 4. Host assigns moderator role using userId and role alias
+    const roleProm = new Promise((resolve) => {
+      guest.once('role_assigned', (data) => resolve(data));
+    });
+    const assignRes = await emitWithAck(host, 'assign_role', {
+      userId: joinRes.userId,
+      role: 'moderator',
+    });
+    expect(assignRes.success).toBe(true);
+    expect(assignRes.role).toBe('moderator');
+
+    const roleEvent = await roleProm;
+    expect(roleEvent.userId).toBe(joinRes.userId);
+    expect(roleEvent.role).toBe('moderator');
+    expect(roleEvent.newRole).toBe('moderator');
+
+    // 5. Host transfers host role to guest using userId and role: 'host'
+    const transferRes = await emitWithAck(host, 'assign_role', {
+      userId: joinRes.userId,
+      role: 'host',
+    });
+    expect(transferRes.success).toBe(true);
+    expect(transferRes.role).toBe('host');
+
+    // Verify room hostId updated
+    const roomAfterTransfer = roomManager.getRoom(roomId);
+    expect(roomAfterTransfer.hostId).toBe(joinRes.userId);
+
+    // 6. Guest (now host) removes original host using userId alias
+    const hostRemovedPromise = new Promise((resolve) => {
+      host.once('participant_removed', (data) => resolve(data));
+    });
+
+    const removeRes = await emitWithAck(guest, 'remove_participant', {
+      userId: createRes.userId,
+    });
+    expect(removeRes.success).toBe(true);
+
+    const removedEvent = await hostRemovedPromise;
+    expect(removedEvent.userId).toBe(createRes.userId);
+    expect(removedEvent.isSelf).toBe(true);
+  });
+
   // REST API Tests
   describe('REST Endpoints', () => {
     test('GET /api/health returns ok status', async () => {
