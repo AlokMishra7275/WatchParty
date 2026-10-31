@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { socketService } from '../services/socketService';
 
-const RoomContext = createContext(null);
+export const RoomContext = createContext(null);
 
 export function RoomProvider({ children }) {
   const [roomId, setRoomId] = useState(null);
@@ -155,12 +155,13 @@ export function RoomProvider({ children }) {
   }, [currentUser?.id, showToast]);
 
   // Actions
-  const join = async ({ targetRoomId, name, isCreating = false, initialVideoId = null }) => {
+  const join = useCallback(async ({ targetRoomId, name, isCreating = false, initialVideoId = null }) => {
     const res = await socketService.joinRoom({
       roomId: targetRoomId,
       name,
       isCreating,
       initialVideoId,
+      participantId: currentUser?.id || null,
     });
 
     if (res.success) {
@@ -175,56 +176,56 @@ export function RoomProvider({ children }) {
       }
     }
     return res;
-  };
+  }, [currentUser?.id]);
 
-  const leave = async () => {
+  const leave = useCallback(async () => {
     if (roomId) {
       await socketService.leaveRoom(roomId);
       setRoomId(null);
       setSyncState(null);
       setChatMessages([]);
     }
-  };
+  }, [roomId]);
 
-  const playVideo = async (currentTime) => {
+  const playVideo = useCallback(async (currentTime) => {
     return await socketService.play(currentTime);
-  };
+  }, []);
 
-  const pauseVideo = async (currentTime) => {
+  const pauseVideo = useCallback(async (currentTime) => {
     return await socketService.pause(currentTime);
-  };
+  }, []);
 
-  const seekVideo = async (currentTime) => {
+  const seekVideo = useCallback(async (currentTime) => {
     return await socketService.seek(currentTime);
-  };
+  }, []);
 
-  const changeVideo = async (url, videoId) => {
+  const changeVideo = useCallback(async (url, videoId) => {
     return await socketService.changeVideo(url, videoId);
-  };
+  }, []);
 
-  const requestPlaybackAction = async (action, payload) => {
+  const requestPlaybackAction = useCallback(async (action, payload) => {
     return await socketService.requestAction(action, payload);
-  };
+  }, []);
 
-  const approveRequest = async (requestId) => {
+  const approveRequest = useCallback(async (requestId) => {
     return await socketService.approveRequest(requestId);
-  };
+  }, []);
 
-  const rejectRequest = async (requestId) => {
+  const rejectRequest = useCallback(async (requestId) => {
     return await socketService.rejectRequest(requestId);
-  };
+  }, []);
 
-  const assignRole = async (targetParticipantId, newRole) => {
+  const assignRole = useCallback(async (targetParticipantId, newRole) => {
     return await socketService.assignRole(targetParticipantId, newRole);
-  };
+  }, []);
 
-  const removeParticipant = async (targetParticipantId) => {
+  const removeParticipant = useCallback(async (targetParticipantId) => {
     return await socketService.removeParticipant(targetParticipantId);
-  };
+  }, []);
 
-  const sendMessage = async (text) => {
+  const sendMessage = useCallback(async (text) => {
     return await socketService.sendChat(text);
-  };
+  }, []);
 
   // Helper flags
   const role = currentUser?.role || 'participant';
@@ -271,12 +272,4 @@ export function RoomProvider({ children }) {
       {children}
     </RoomContext.Provider>
   );
-}
-
-export function useRoom() {
-  const context = useContext(RoomContext);
-  if (!context) {
-    throw new Error('useRoom must be used within a RoomProvider');
-  }
-  return context;
 }

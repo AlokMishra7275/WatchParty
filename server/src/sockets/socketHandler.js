@@ -347,16 +347,27 @@ function setupSocketHandlers(io, roomManager) {
       io.to(room.roomId).emit('chat_message', { message: result.message });
     });
 
-    // 12. LEAVE ROOM
+    // 12. LEAVE ROOM (explicit leave button)
     socket.on('leave_room', ({ roomId } = {}, callback) => {
       handleUserLeave(socket, io, roomManager, callback);
     });
 
-    // 13. DISCONNECT
+    // 13. DISCONNECT (browser refresh, tab closed, or temporary network drop)
     socket.on('disconnect', () => {
-      handleUserLeave(socket, io, roomManager);
+      handleUserDisconnect(socket, io, roomManager);
     });
   });
+}
+
+function handleUserDisconnect(socket, io, roomManager) {
+  const result = roomManager.handleDisconnect(socket.id);
+  if (!result) return;
+
+  const { room, participant } = result;
+  socket.leave(room.roomId);
+
+  // Broadcast sync state so remaining participants see isOnline updated
+  io.to(room.roomId).emit('sync_state', roomManager.getSyncState(room));
 }
 
 function handleUserLeave(socket, io, roomManager, callback) {

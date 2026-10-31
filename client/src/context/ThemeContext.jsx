@@ -1,20 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useState, useEffect, useCallback } from 'react';
+import { THEME_STORAGE_KEY, resolveInitialTheme } from '../utils/theme';
 
-const ThemeContext = createContext(null);
-
-export const THEME_STORAGE_KEY = 'watchparty_theme';
-
-/**
- * Resolves the initial theme.
- * Always defaults to 'light' on first visit or when no preference is saved.
- * If user has explicitly selected 'dark', restores 'dark'.
- */
-export function resolveInitialTheme(storedTheme) {
-  if (storedTheme === 'dark') {
-    return 'dark';
-  }
-  return 'light';
-}
+export const ThemeContext = createContext(null);
 
 export function ThemeProvider({ children }) {
   const [theme, setThemeState] = useState(() => {
@@ -77,12 +64,4 @@ export function ThemeProvider({ children }) {
       {children}
     </ThemeContext.Provider>
   );
-}
-
-export function useTheme() {
-  const context = useContext(ThemeContext);
-  if (!context) {
-    throw new Error('useTheme must be used within a ThemeProvider');
-  }
-  return context;
 }

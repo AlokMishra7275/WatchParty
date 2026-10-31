@@ -2,16 +2,19 @@ import React from 'react';
 import { AlertCircle, VolumeX, Loader2 } from 'lucide-react';
 
 export function YouTubePlayer({
-  containerId,
+  containerId = 'yt-player-host',
   isReady,
-  playbackStatus,
+  _playbackStatus,
   playerError,
   autoplayBlocked,
   onUnmute,
 }) {
   return (
     <div className="relative w-full aspect-video bg-black rounded-2xl overflow-hidden border theme-border shadow-xl dark:shadow-2xl dark:shadow-black/80 group">
-      {/* Container for YouTube iframe API */}
+      {/* 
+        DOM Host for YouTube Iframe. 
+        React renders this empty div. useYouTubePlayer mounts and destroys the iframe inside it without virtual DOM conflicts.
+      */}
       <div id={containerId} className="w-full h-full" />
 
       {/* Loading Overlay */}

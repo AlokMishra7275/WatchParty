@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Tv,
@@ -9,12 +9,11 @@ import {
   Users,
   MessageSquare,
   Hand,
-  Radio,
   Sparkles,
   Shield,
   Loader2,
 } from 'lucide-react';
-import { useRoom } from '../context/RoomContext';
+import { useRoom } from '../hooks/useRoom';
 import { useYouTubePlayer } from '../hooks/useYouTubePlayer';
 import { YouTubePlayer } from '../components/YouTubePlayer';
 import { PlaybackControls } from '../components/PlaybackControls';
@@ -25,6 +24,8 @@ import { RequestModal } from '../components/RequestModal';
 import { RoleBadge } from '../components/RoleBadge';
 import { ThemeToggle } from '../components/ThemeToggle';
 import { extractYouTubeVideoId } from '../utils/youtube';
+import { validateRoom } from '../services/api';
+import { cleanRoomCode, copyToClipboard } from '../utils/formatters';
 
 const QUICK_PRESETS = [
   { title: 'Lofi Chill Beats', url: 'https://www.youtube.com/watch?v=jfKfPfyJRdk' },
@@ -47,6 +48,7 @@ export function WatchRoom() {
     chatMessages,
     isConnected,
     toastNotification,
+    showToast,
     join,
     leave,
     playVideo,
@@ -69,10 +71,14 @@ export function WatchRoom() {
   const [videoInputError, setVideoInputError] = useState('');
   const [isChangingVideo, setIsChangingVideo] = useState(false);
 
-  // Direct join prompt modal if user landed on room URL without session
+  // Direct arrival states
   const [promptNameOpen, setPromptNameOpen] = useState(false);
   const [guestName, setGuestName] = useState(currentUser?.name || '');
   const [joiningDirect, setJoiningDirect] = useState(false);
+  const [joinError, setJoinError] = useState('');
+  const [isValidatingRoom, setIsValidatingRoom] = useState(!roomId && Boolean(urlRoomId));
+  const [roomValidationError, setRoomValidationError] = useState('');
+  const validatedCodeRef = useRef(null);
 
   // Request Action Modal
   const [requestModalOpen, setRequestModalOpen] = useState(false);
@@ -80,21 +86,87 @@ export function WatchRoom() {
   // Leave Confirmation
   const [leaveModalOpen, setLeaveModalOpen] = useState(false);
 
-  // Check if we need to prompt for name on direct URL arrival
+  // Validate room & handle direct join or prompt on invite arrival
   useEffect(() => {
-    if (!roomId && urlRoomId) {
+    let isCancelled = false;
+    const targetCode = cleanRoomCode(urlRoomId);
+
+    if (!targetCode) {
+      setRoomValidationError('Invalid room link format.');
+      setIsValidatingRoom(false);
+      return;
+    }
+
+    // Already in this room with current session
+    if (roomId && cleanRoomCode(roomId) === targetCode) {
+      setIsValidatingRoom(false);
+      setPromptNameOpen(false);
+      return;
+    }
+
+    // Avoid multiple redundant validation calls for the same targetCode
+    if (validatedCodeRef.current === targetCode && (roomValidationError || promptNameOpen)) {
+      setIsValidatingRoom(false);
+      return;
+    }
+
+    async function checkAndJoin() {
+      setIsValidatingRoom(true);
+      setRoomValidationError('');
+      validatedCodeRef.current = targetCode;
+
+      // 1. Verify that the room actually exists on the server
+      const validation = await validateRoom(targetCode);
+      if (isCancelled) return;
+
+      if (!validation.valid) {
+        setRoomValidationError(validation.error || 'This room does not exist or has ended.');
+        setIsValidatingRoom(false);
+        return;
+      }
+
+      // 2. If user already has a saved display name, attempt auto-join
+      if (currentUser?.name) {
+        setJoiningDirect(true);
+        const res = await join({
+          targetRoomId: targetCode,
+          name: currentUser.name,
+          isCreating: false,
+        });
+
+        if (isCancelled) return;
+        setJoiningDirect(false);
+
+        if (res.success) {
+          setIsValidatingRoom(false);
+          setPromptNameOpen(false);
+          return;
+        }
+      }
+
+      // 3. Otherwise show display name entry prompt
+      setIsValidatingRoom(false);
       setPromptNameOpen(true);
     }
-  }, [roomId, urlRoomId]);
+
+    checkAndJoin();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [urlRoomId, roomId, currentUser?.name, join]);
 
   const handleDirectJoin = async (e) => {
     e.preventDefault();
-    if (!guestName.trim()) return;
+    const cleanId = cleanRoomCode(urlRoomId);
+    if (!guestName.trim() || !cleanId) return;
 
     setJoiningDirect(true);
+    setJoinError('');
     saveDisplayName(guestName.trim());
+
     const res = await join({
-      targetRoomId: urlRoomId,
+      targetRoomId: cleanId,
       name: guestName.trim(),
       isCreating: false,
     });
@@ -103,8 +175,7 @@ export function WatchRoom() {
     if (res.success) {
       setPromptNameOpen(false);
     } else {
-      alert(res.error || 'Failed to join room');
-      navigate('/');
+      setJoinError(res?.error || 'Failed to join room. Please check the room code or try again.');
     }
   };
 
@@ -152,9 +223,10 @@ export function WatchRoom() {
     pauseVideo: localPause,
     toggleMute,
   } = useYouTubePlayer({
-    containerId: 'yt-player-container',
+    containerId: 'yt-player-host',
     initialVideoId: currentVideoId,
     canControl: canControlPlayback,
+    enabled: Boolean(roomId && !isValidatingRoom && !promptNameOpen),
     onUserPlay,
     onUserPause,
     onUserSeek,
@@ -175,19 +247,30 @@ export function WatchRoom() {
   }, [syncState, isReady, syncWithServer]);
 
   // Copy Room Link
-  const handleCopyLink = () => {
-    const url = window.location.href;
-    navigator.clipboard.writeText(url);
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
+  const handleCopyLink = async () => {
+    const cleanId = cleanRoomCode(urlRoomId || roomId);
+    const origin = window.location.origin;
+    const url = `${origin}/room/${cleanId}`;
+    const ok = await copyToClipboard(url);
+    if (ok) {
+      setCopiedLink(true);
+      showToast('Invite link copied to clipboard!', 'success');
+      setTimeout(() => setCopiedLink(false), 2000);
+    } else {
+      showToast('Failed to copy invite link', 'error');
+    }
   };
 
   // Copy Room Code
-  const handleCopyCode = () => {
-    if (urlRoomId) {
-      navigator.clipboard.writeText(urlRoomId);
-      setCopiedCode(true);
-      setTimeout(() => setCopiedCode(false), 2000);
+  const handleCopyCode = async () => {
+    const cleanId = cleanRoomCode(urlRoomId || roomId);
+    if (cleanId) {
+      const ok = await copyToClipboard(cleanId);
+      if (ok) {
+        setCopiedCode(true);
+        showToast('Room code copied to clipboard!', 'success');
+        setTimeout(() => setCopiedCode(false), 2000);
+      }
     }
   };
 
@@ -243,6 +326,42 @@ export function WatchRoom() {
 
   const pendingRequests = syncState?.pendingRequests || [];
   const participants = syncState?.participants || [];
+
+  if (isValidatingRoom) {
+    return (
+      <div className="theme-page min-h-screen flex flex-col items-center justify-center p-6 text-[var(--text-main)] transition-colors duration-200">
+        <Loader2 className="w-10 h-10 text-indigo-600 dark:text-indigo-400 animate-spin mb-4" />
+        <h2 className="text-lg font-bold mb-1">Joining Watch Party...</h2>
+        <p className="text-xs text-[var(--text-muted)]">
+          Connecting to room <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{cleanRoomCode(urlRoomId)}</span>
+        </p>
+      </div>
+    );
+  }
+
+  if (roomValidationError) {
+    return (
+      <div className="theme-page min-h-screen flex flex-col items-center justify-center p-6 text-[var(--text-main)] transition-colors duration-200">
+        <div className="theme-card border theme-border rounded-3xl max-w-md w-full p-8 text-center shadow-2xl">
+          <div className="w-14 h-14 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-500 dark:text-red-400 flex items-center justify-center mx-auto mb-4">
+            <Tv className="w-7 h-7" />
+          </div>
+          <h2 className="text-xl font-extrabold mb-2">Room Not Found</h2>
+          <p className="text-xs sm:text-sm text-[var(--text-muted)] mb-6">
+            {roomValidationError}
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button
+              onClick={() => navigate('/')}
+              className="flex-1 py-3 px-4 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 transition-all shadow-md shadow-indigo-600/20 cursor-pointer"
+            >
+              Back to Home
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="theme-page min-h-screen flex flex-col text-[var(--text-main)] transition-colors duration-200">
@@ -413,7 +532,7 @@ export function WatchRoom() {
 
           {/* YouTube Embedded Player */}
           <YouTubePlayer
-            containerId="yt-player-container"
+            containerId="yt-player-host"
             isReady={isReady}
             playbackStatus={playbackStatus}
             playerError={playerError}
@@ -557,8 +676,14 @@ export function WatchRoom() {
           <div className="theme-card border theme-border rounded-3xl w-full max-w-sm p-6 shadow-2xl transition-colors duration-200">
             <h3 className="text-lg font-bold text-[var(--text-main)] mb-1">Join Watch Party</h3>
             <p className="text-xs text-[var(--text-muted)] mb-5">
-              Enter your display name to join room <strong className="text-indigo-600 dark:text-indigo-400">{urlRoomId}</strong>
+              Enter your display name to join room <strong className="text-indigo-600 dark:text-indigo-400">{cleanRoomCode(urlRoomId)}</strong>
             </p>
+
+            {joinError && (
+              <div className="mb-4 p-3 rounded-xl bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 text-red-600 dark:text-red-400 text-xs">
+                {joinError}
+              </div>
+            )}
 
             <form onSubmit={handleDirectJoin} className="space-y-4">
               <div>
@@ -576,14 +701,23 @@ export function WatchRoom() {
                 />
               </div>
 
-              <button
-                type="submit"
-                disabled={joiningDirect || !guestName.trim()}
-                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm font-bold text-white shadow-lg shadow-indigo-600/30 transition-transform active:scale-95 disabled:opacity-50 cursor-pointer"
-              >
-                {joiningDirect && <Loader2 size={15} className="animate-spin" />}
-                <span>{joiningDirect ? 'Entering...' : 'Enter Party'}</span>
-              </button>
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => navigate('/')}
+                  className="px-4 py-2.5 rounded-xl text-xs font-bold bg-[var(--bg-card-subtle)] hover:bg-[var(--bg-card-hover)] theme-text-main border theme-border transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={joiningDirect || !guestName.trim()}
+                  className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white shadow-lg shadow-indigo-600/30 transition-transform active:scale-95 disabled:opacity-50 cursor-pointer"
+                >
+                  {joiningDirect && <Loader2 size={14} className="animate-spin" />}
+                  <span>{joiningDirect ? 'Entering...' : 'Enter Party'}</span>
+                </button>
+              </div>
             </form>
           </div>
         </div>

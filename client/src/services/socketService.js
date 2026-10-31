@@ -43,11 +43,27 @@ class SocketService {
 
   // --- Client-to-server action methods with Promise wrappers ---
 
-  joinRoom({ roomId, name, isCreating = false, initialVideoId = null, participantId = null }) {
+  joinRoom({ roomId, name, isCreating = false, initialVideoId = null, participantId = null }, timeoutMs = 10000) {
     const socket = this.getSocket();
     return new Promise((resolve) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          resolve({ success: false, error: 'Connection timed out. Please check your connection and try again.' });
+        }
+      }, timeoutMs);
+
+      if (!socket.connected) {
+        socket.connect();
+      }
+
       socket.emit('join_room', { roomId, name, isCreating, initialVideoId, participantId }, (response) => {
-        resolve(response);
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(response || { success: false, error: 'No response from server.' });
+        }
       });
     });
   }

@@ -2,8 +2,12 @@
  * API client for WatchParty REST endpoints
  */
 
-const rawEnv = (import.meta.env.VITE_SERVER_URL || '').trim();
-const SERVER_URL = rawEnv.replace(/\/+$/, '');
+const envUrl = (import.meta.env.VITE_SERVER_URL || '').trim().replace(/\/+$/, '');
+const SERVER_URL = envUrl || (
+  typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? 'http://localhost:5000'
+    : (typeof window !== 'undefined' ? window.location.origin : '')
+);
 
 export async function checkServerHealth() {
   try {
@@ -17,7 +21,8 @@ export async function checkServerHealth() {
 
 export async function validateRoom(roomId) {
   try {
-    const res = await fetch(`${SERVER_URL}/api/rooms/${encodeURIComponent(roomId)}/validate`);
+    const cleanId = encodeURIComponent(String(roomId || '').trim().toLowerCase());
+    const res = await fetch(`${SERVER_URL}/api/rooms/${cleanId}/validate`);
     const data = await res.json();
     return { ok: res.ok, status: res.status, ...data };
   } catch (err) {

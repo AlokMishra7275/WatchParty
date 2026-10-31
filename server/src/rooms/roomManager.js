@@ -29,6 +29,12 @@ class RoomManager {
      * Enables secure lookup and spoof-prevention
      */
     this.socketMap = new Map();
+
+    /**
+     * Grace period timers for empty rooms & disconnecting participants
+     */
+    this.roomCleanupTimers = new Map();
+    this.disconnectTimers = new Map();
   }
 
   /**
@@ -94,14 +100,20 @@ class RoomManager {
    * Create a new room with Host
    */
   createRoom(hostName = 'Host', socketId = null, initialVideoId = null) {
-    let roomId = generateRoomId();
+    let roomId = generateRoomId().toLowerCase();
     while (this.rooms.has(roomId)) {
-      roomId = generateRoomId();
+      roomId = generateRoomId().toLowerCase();
     }
 
     const hostId = generateUniqueId('user');
     const safeName = (hostName && hostName.trim()) ? hostName.trim().slice(0, 30) : 'Host';
-    const videoId = initialVideoId || config.defaultVideoId;
+    let videoId = config.defaultVideoId;
+    if (initialVideoId && typeof initialVideoId === 'string') {
+      const val = extractYouTubeVideoId(initialVideoId);
+      if (val.valid && val.videoId) {
+        videoId = val.videoId;
+      }
+    }
 
     const hostParticipant = {
       id: hostId,
@@ -140,9 +152,16 @@ class RoomManager {
    * Join an existing room
    */
   joinRoom(roomId, participantName = 'Guest', socketId = null, reconnectParticipantId = null) {
-    const room = this.rooms.get(roomId);
+    const cleanId = String(roomId || '').trim().toLowerCase();
+    const room = this.rooms.get(cleanId);
     if (!room) {
       return { success: false, error: 'Room not found. Please verify the room code.' };
+    }
+
+    // Cancel empty-room cleanup timer if active
+    if (this.roomCleanupTimers.has(cleanId)) {
+      clearTimeout(this.roomCleanupTimers.get(cleanId));
+      this.roomCleanupTimers.delete(cleanId);
     }
 
     // Clean up if socket was previously registered in a room
@@ -153,13 +172,20 @@ class RoomManager {
     // Check for reconnection of existing participant in this room
     if (reconnectParticipantId && room.participants.has(reconnectParticipantId)) {
       const existing = room.participants.get(reconnectParticipantId);
+
+      // Cancel disconnect timer for this participant if pending
+      if (this.disconnectTimers.has(existing.id)) {
+        clearTimeout(this.disconnectTimers.get(existing.id));
+        this.disconnectTimers.delete(existing.id);
+      }
+
       if (existing.socketId && existing.socketId !== socketId) {
         this.socketMap.delete(existing.socketId);
       }
       existing.socketId = socketId;
       existing.isOnline = true;
       if (socketId) {
-        this.socketMap.set(socketId, { roomId, participantId: existing.id });
+        this.socketMap.set(socketId, { roomId: cleanId, participantId: existing.id });
       }
       return { success: true, room, participant: existing, isReconnection: true };
     }
@@ -180,7 +206,7 @@ class RoomManager {
 
     room.participants.set(participantId, participant);
     if (socketId) {
-      this.socketMap.set(socketId, { roomId, participantId });
+      this.socketMap.set(socketId, { roomId: cleanId, participantId });
     }
 
     return { success: true, room, participant, isReconnection: false };
@@ -190,7 +216,8 @@ class RoomManager {
    * Get room by ID
    */
   getRoom(roomId) {
-    return this.rooms.get(roomId);
+    if (!roomId) return null;
+    return this.rooms.get(String(roomId).trim().toLowerCase());
   }
 
   /**
@@ -203,6 +230,61 @@ class RoomManager {
     if (!room) return null;
     const participant = room.participants.get(mapping.participantId);
     if (!participant) return null;
+    return { room, participant };
+  }
+
+  /**
+   * Handle socket disconnection without instantly purging participant
+   * (allows page refreshes, tab reloads, and temporary network drops)
+   */
+  handleDisconnect(socketId) {
+    const mapping = this.socketMap.get(socketId);
+    if (!mapping) return null;
+
+    const { roomId, participantId } = mapping;
+    this.socketMap.delete(socketId);
+
+    const room = this.rooms.get(roomId);
+    if (!room) return null;
+
+    const participant = room.participants.get(participantId);
+    if (!participant) return null;
+
+    participant.isOnline = false;
+    participant.socketId = null;
+
+    // Check if any participants remain online
+    const hasOnline = Array.from(room.participants.values()).some((p) => p.isOnline);
+    if (!hasOnline && !this.roomCleanupTimers.has(roomId)) {
+      const timer = setTimeout(() => {
+        this.rooms.delete(roomId);
+        this.roomCleanupTimers.delete(roomId);
+      }, 5 * 60 * 1000); // 5 minute grace period for empty room
+      this.roomCleanupTimers.set(roomId, timer);
+    }
+
+    // Schedule delayed participant removal if they do not reconnect within 3 minutes
+    if (!this.disconnectTimers.has(participantId)) {
+      const timer = setTimeout(() => {
+        this.disconnectTimers.delete(participantId);
+        if (room.participants.has(participantId) && !room.participants.get(participantId).isOnline) {
+          room.participants.delete(participantId);
+          if (room.hostId === participantId && room.participants.size > 0) {
+            const participantsArray = Array.from(room.participants.values());
+            const nextHost = participantsArray.find((p) => p.role === ROLES.MODERATOR) || participantsArray[0];
+            if (nextHost) {
+              nextHost.role = ROLES.HOST;
+              room.hostId = nextHost.id;
+            }
+          }
+          if (room.participants.size === 0) {
+            this.rooms.delete(roomId);
+          }
+        }
+      }, 3 * 60 * 1000);
+      this.disconnectTimers.set(participantId, timer);
+    }
+
     return { room, participant };
   }
 
@@ -242,9 +324,15 @@ class RoomManager {
       }
     }
 
-    // Clean up empty room
+    // Clean up empty room with grace period
     if (room.participants.size === 0) {
-      this.rooms.delete(roomId);
+      if (!this.roomCleanupTimers.has(roomId)) {
+        const timer = setTimeout(() => {
+          this.rooms.delete(roomId);
+          this.roomCleanupTimers.delete(roomId);
+        }, 5 * 60 * 1000);
+        this.roomCleanupTimers.set(roomId, timer);
+      }
       return { roomDeleted: true, roomId, participant };
     }
 

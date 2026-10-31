@@ -7,13 +7,14 @@ import {
   Shield,
   Radio,
   ArrowRight,
-  Tv,
   Loader2,
 } from 'lucide-react';
 import { Navbar } from '../components/Navbar';
 import { Footer } from '../components/Footer';
 import { validateRoom } from '../services/api';
-import { useRoom } from '../context/RoomContext';
+import { useRoom } from '../hooks/useRoom';
+import { cleanRoomCode } from '../utils/formatters';
+import { extractYouTubeVideoId } from '../utils/youtube';
 
 export function LandingPage() {
   const navigate = useNavigate();
@@ -41,6 +42,17 @@ export function LandingPage() {
       return;
     }
 
+    let initialVideoId = null;
+    if (initialVideoUrl.trim()) {
+      const extracted = extractYouTubeVideoId(initialVideoUrl.trim());
+      if (extracted.valid) {
+        initialVideoId = extracted.videoId;
+      } else {
+        setErrorMsg('Please enter a valid YouTube video URL or ID');
+        return;
+      }
+    }
+
     setLoading(true);
     setErrorMsg('');
 
@@ -49,7 +61,7 @@ export function LandingPage() {
       const res = await join({
         name: hostName.trim(),
         isCreating: true,
-        initialVideoId: initialVideoUrl ? initialVideoUrl.trim() : null,
+        initialVideoId,
       });
 
       setLoading(false);
@@ -80,9 +92,11 @@ export function LandingPage() {
     setErrorMsg('');
 
     try {
-      let cleanCode = code;
-      if (cleanCode.includes('/room/')) {
-        cleanCode = cleanCode.split('/room/')[1].split('?')[0].split('#')[0];
+      const cleanCode = cleanRoomCode(code);
+      if (!cleanCode) {
+        setLoading(false);
+        setErrorMsg('Please enter a valid room code or invite link');
+        return;
       }
 
       const validation = await validateRoom(cleanCode);
