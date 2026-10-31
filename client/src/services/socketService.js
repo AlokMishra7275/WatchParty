@@ -158,11 +158,15 @@ class SocketService {
     });
   }
 
-  sendChat(text) {
+  sendChat(text, roomId = null) {
     const socket = this.getSocket();
     return new Promise((resolve) => {
-      socket.emit('send_chat', { text }, (response) => {
-        resolve(response);
+      if (!socket.connected) {
+        resolve({ success: false, error: 'Socket is disconnected. Please wait for reconnection.' });
+        return;
+      }
+      socket.emit('send_chat', { text, roomId }, (response) => {
+        resolve(response || { success: false, error: 'No response from server.' });
       });
     });
   }

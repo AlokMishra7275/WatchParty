@@ -257,4 +257,64 @@ describe('RoomManager Unit Tests', () => {
     expect(extractYouTubeVideoId('invalid_id').valid).toBe(false);
     expect(extractYouTubeVideoId('').valid).toBe(false);
   });
+
+  test('Authoritative sync state includes isPlaying, updatedAt, and hostId', () => {
+    const { room, host } = roomManager.createRoom('Alice', 'socket_alice');
+    const syncState = roomManager.getSyncState(room);
+
+    expect(syncState.hostId).toBe(host.id);
+    expect(syncState.playback.hostId).toBe(host.id);
+    expect(syncState.playback.videoId).toBeDefined();
+    expect(syncState.playback.isPlaying).toBe(false);
+    expect(typeof syncState.playback.currentTime).toBe('number');
+    expect(typeof syncState.playback.updatedAt).toBe('number');
+    expect(typeof syncState.playback.serverTimestamp).toBe('number');
+
+    // Host plays
+    roomManager.updatePlayback(room.roomId, 'play', { currentTime: 25 }, 'socket_alice');
+    const playingState = roomManager.getSyncState(room);
+    expect(playingState.playback.isPlaying).toBe(true);
+    expect(playingState.playback.status).toBe('playing');
+    expect(playingState.playback.currentTime).toBeGreaterThanOrEqual(25);
+  });
+
+  test('Chat permission and messaging for Host, Moderator, and Participant', () => {
+    const { room, host: alice } = roomManager.createRoom('Alice', 'socket_alice');
+    const { participant: bob } = roomManager.joinRoom(room.roomId, 'Bob', 'socket_bob');
+    const { participant: charlie } = roomManager.joinRoom(room.roomId, 'Charlie', 'socket_charlie');
+
+    roomManager.assignRole(room.roomId, bob.id, ROLES.MODERATOR, 'socket_alice');
+
+    // Host can send chat
+    const hostMsg = roomManager.addChatMessage(room.roomId, 'Welcome all!', 'socket_alice');
+    expect(hostMsg.success).toBe(true);
+    expect(hostMsg.message.senderName).toBe('Alice');
+    expect(hostMsg.message.senderRole).toBe(ROLES.HOST);
+
+    // Moderator can send chat
+    const modMsg = roomManager.addChatMessage(room.roomId, 'Hello everyone!', 'socket_bob');
+    expect(modMsg.success).toBe(true);
+    expect(modMsg.message.senderRole).toBe(ROLES.MODERATOR);
+
+    // Participant can send chat
+    const partMsg = roomManager.addChatMessage(room.roomId, 'Excited to watch!', 'socket_charlie');
+    expect(partMsg.success).toBe(true);
+    expect(partMsg.message.senderRole).toBe(ROLES.PARTICIPANT);
+
+    // Socket not in room cannot send chat
+    const unauthMsg = roomManager.addChatMessage(room.roomId, 'Hacker', 'socket_unknown');
+    expect(unauthMsg.success).toBe(false);
+  });
+
+  test('Same socket re-joining the same room preserves Host membership', () => {
+    const { room, host: alice } = roomManager.createRoom('Alice', 'socket_alice');
+
+    // Emulate client calling joinRoom with same socket in same room
+    const reJoin = roomManager.joinRoom(room.roomId, 'Alice', 'socket_alice');
+    expect(reJoin.success).toBe(true);
+    expect(reJoin.participant.id).toBe(alice.id);
+    expect(reJoin.participant.role).toBe(ROLES.HOST);
+    expect(room.hostId).toBe(alice.id);
+    expect(room.participants.get(alice.id)).toBeDefined();
+  });
 });

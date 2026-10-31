@@ -325,17 +325,34 @@ function setupSocketHandlers(io, roomManager) {
     });
 
     // 11. CHAT MESSAGE
-    socket.on('send_chat', ({ text }, callback) => {
-      const info = roomManager.getParticipantBySocket(socket.id);
+    socket.on('send_chat', ({ text, roomId } = {}, callback) => {
+      let info = roomManager.getParticipantBySocket(socket.id);
+
+      // Fallback: If mapping is briefly missing due to socket reconnect, attempt room resolution
+      if (!info && roomId) {
+        const cleanId = String(roomId).trim().toLowerCase();
+        const room = roomManager.getRoom(cleanId);
+        if (room) {
+          for (const p of room.participants.values()) {
+            if (p.socketId === socket.id) {
+              info = { room, participant: p };
+              roomManager.socketMap.set(socket.id, { roomId: cleanId, participantId: p.id });
+              break;
+            }
+          }
+        }
+      }
+
       if (!info) {
-        const error = 'Not joined in any active room.';
+        const error = 'Not joined in any active room. Please refresh or rejoin.';
         if (typeof callback === 'function') callback({ success: false, error });
         socket.emit('error_message', { error });
         return;
       }
 
       const { room } = info;
-      const result = roomManager.addChatMessage(room.roomId, text, socket.id);
+      const targetRoomId = roomId ? String(roomId).trim().toLowerCase() : room.roomId;
+      const result = roomManager.addChatMessage(targetRoomId, text, socket.id);
 
       if (!result.success) {
         if (typeof callback === 'function') callback({ success: false, error: result.error });

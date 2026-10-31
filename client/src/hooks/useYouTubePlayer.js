@@ -5,7 +5,7 @@ let ytApiPromise = null;
 
 /**
  * Robust YouTube IFrame API script loader.
- * Reuses single promise across callers and handles timeouts/errors cleanly.
+ * Reuses a single promise across callers and handles timeouts/errors cleanly.
  */
 function loadYouTubeApi() {
   if (typeof window === 'undefined') {
@@ -92,9 +92,38 @@ function sanitizeVideoId(input) {
 }
 
 /**
+ * Calculates authoritative playback timestamp using elapsed server time
+ */
+function computeAuthoritativeTime(playback) {
+  if (!playback) return 0;
+  const {
+    currentTime = 0,
+    isPlaying,
+    status,
+    serverTimestamp,
+    updatedAt,
+    lastUpdated,
+    playbackRate = 1,
+  } = playback;
+
+  const isCurrentlyPlaying = isPlaying !== undefined ? isPlaying : status === 'playing';
+  if (!isCurrentlyPlaying) {
+    return Math.max(0, currentTime);
+  }
+
+  const refTime = serverTimestamp || updatedAt || lastUpdated;
+  if (refTime) {
+    const elapsedSeconds = Math.max(0, (Date.now() - refTime) / 1000);
+    return Math.max(0, currentTime + elapsedSeconds * playbackRate);
+  }
+
+  return Math.max(0, currentTime);
+}
+
+/**
  * YouTube IFrame API Hook
- * Manages player lifecycle, prevents synchronization feedback loops,
- * and handles drift correction.
+ * Enforces host-authoritative playback synchronization, drift correction,
+ * and eliminates duplicate controls while preventing feedback loops.
  */
 export function useYouTubePlayer({
   containerId = 'yt-player-host',
@@ -114,10 +143,15 @@ export function useYouTubePlayer({
   const [playerError, setPlayerError] = useState(null);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
 
-  // Flags to prevent echo loops
+  // Flags to prevent synchronization feedback loops
   const isProgrammaticUpdate = useRef(false);
-  const lastReportedTime = useRef(0);
   const currentVideoIdRef = useRef(sanitizeVideoId(initialVideoId));
+  const lastSyncPlaybackRef = useRef(null);
+  const pendingSyncRef = useRef(null);
+
+  // Time tracking for detecting native seek bar scrubbing by host
+  const lastObservedTime = useRef(0);
+  const lastTickTime = useRef(Date.now());
 
   useEffect(() => {
     if (initialVideoId) {
@@ -125,7 +159,7 @@ export function useYouTubePlayer({
     }
   }, [initialVideoId]);
 
-  // Keep fresh references to callbacks & permissions to avoid stale closures in player events
+  // Keep fresh references to avoid stale closures in player callbacks
   const canControlRef = useRef(canControl);
   const onUserPlayRef = useRef(onUserPlay);
   const onUserPauseRef = useRef(onUserPause);
@@ -137,6 +171,101 @@ export function useYouTubePlayer({
     onUserPauseRef.current = onUserPause;
     onUserSeekRef.current = onUserSeek;
   }, [canControl, onUserPlay, onUserPause, onUserSeek]);
+
+  // Internal apply sync helper
+  const applySyncToPlayer = useCallback((playback) => {
+    const player = playerRef.current;
+    if (!player || typeof player.getPlayerState !== 'function') {
+      pendingSyncRef.current = playback;
+      return;
+    }
+
+    lastSyncPlaybackRef.current = playback;
+    const { videoId, status, isPlaying } = playback;
+    const isCurrentlyPlaying = isPlaying !== undefined ? isPlaying : status === 'playing';
+    const targetTime = computeAuthoritativeTime(playback);
+
+    const cleanTargetVideoId = sanitizeVideoId(videoId);
+
+    // 1. Video ID check
+    if (cleanTargetVideoId && cleanTargetVideoId !== currentVideoIdRef.current) {
+      currentVideoIdRef.current = cleanTargetVideoId;
+      isProgrammaticUpdate.current = true;
+      setPlayerError(null);
+      try {
+        if (isCurrentlyPlaying) {
+          player.loadVideoById({ videoId: cleanTargetVideoId, startSeconds: targetTime });
+        } else {
+          player.cueVideoById({ videoId: cleanTargetVideoId, startSeconds: targetTime });
+        }
+      } catch (e) {
+        console.warn('Error loading video by ID:', e);
+      }
+      return;
+    }
+
+    // 2. Play / Pause status check
+    const currentYTState = player.getPlayerState ? player.getPlayerState() : -1;
+    const isLocalPlaying = currentYTState === (window.YT?.PlayerState?.PLAYING || 1);
+
+    if (isCurrentlyPlaying && !isLocalPlaying) {
+      isProgrammaticUpdate.current = true;
+      try {
+        player.playVideo();
+      } catch (e) {
+        console.warn('Error playing video:', e);
+      }
+    } else if (!isCurrentlyPlaying && isLocalPlaying) {
+      isProgrammaticUpdate.current = true;
+      try {
+        player.pauseVideo();
+      } catch (e) {
+        console.warn('Error pausing video:', e);
+      }
+    }
+
+    // 3. Drift check
+    const localTime = player.getCurrentTime ? player.getCurrentTime() : 0;
+    const drift = localTime - targetTime;
+    const absDrift = Math.abs(drift);
+
+    if (absDrift > 1.5) {
+      // Large drift: seek directly to authoritative timestamp
+      isProgrammaticUpdate.current = true;
+      try {
+        player.seekTo(targetTime, true);
+        if (typeof player.setPlaybackRate === 'function' && player.getPlaybackRate() !== 1) {
+          player.setPlaybackRate(1);
+        }
+      } catch (e) {
+        console.warn('Error seeking video:', e);
+      }
+    } else if (absDrift > 0.4 && isCurrentlyPlaying) {
+      // Small drift: gradually correct playback rate if supported
+      if (typeof player.setPlaybackRate === 'function') {
+        try {
+          if (drift < -0.4) {
+            // Local player is behind host: speed up slightly
+            player.setPlaybackRate(1.25);
+          } else if (drift > 0.4) {
+            // Local player is ahead of host: slow down slightly
+            player.setPlaybackRate(0.75);
+          }
+        } catch (e) {
+          console.warn('Error setting playback rate:', e);
+        }
+      }
+    } else if (absDrift <= 0.3) {
+      // In sync: restore standard rate
+      if (typeof player.setPlaybackRate === 'function') {
+        try {
+          if (player.getPlaybackRate() !== 1) player.setPlaybackRate(1);
+        } catch (e) {
+          // ignore
+        }
+      }
+    }
+  }, []);
 
   // 1. Load YouTube IFrame Script and Initialize Player
   useEffect(() => {
@@ -157,7 +286,7 @@ export function useYouTubePlayer({
 
       if (isCancelled) return;
 
-      // Locate host container in DOM (retry if layout is mounting)
+      // Locate host container in DOM
       let hostEl = document.getElementById(containerId);
       let retries = 0;
       while (!hostEl && retries < 40) {
@@ -184,7 +313,7 @@ export function useYouTubePlayer({
         playerRef.current = null;
       }
 
-      // Clear the host container so no stale iframes or orphaned elements exist
+      // Clear the host container so no stale iframes exist
       hostEl.innerHTML = '';
 
       // Create a fresh child slot element for YouTube to replace with its iframe
@@ -201,7 +330,7 @@ export function useYouTubePlayer({
           videoId: targetVideoId,
           playerVars: {
             autoplay: 1,
-            controls: 1,
+            controls: 1, // Keep YouTube native player controls and native timer visible
             rel: 0,
             modestbranding: 1,
             playsinline: 1,
@@ -214,6 +343,13 @@ export function useYouTubePlayer({
               setIsReady(true);
               setPlayerError(null);
               setDuration(event.target.getDuration ? event.target.getDuration() : 0);
+
+              // Apply any pending sync received before player was ready
+              if (pendingSyncRef.current) {
+                const pending = pendingSyncRef.current;
+                pendingSyncRef.current = null;
+                applySyncToPlayer(pending);
+              }
             },
             onStateChange: (event) => {
               if (isCancelled) return;
@@ -224,17 +360,37 @@ export function useYouTubePlayer({
                 setDuration(event.target.getDuration());
               }
 
+              // If triggered programmatically by socket sync, ignore to prevent feedback loops
               if (isProgrammaticUpdate.current) {
                 isProgrammaticUpdate.current = false;
                 return;
               }
 
+              const nowTime = event.target.getCurrentTime ? event.target.getCurrentTime() : 0;
+
+              // If Host or Moderator: broadcast playback action to room
               if (canControlRef.current) {
-                const nowTime = event.target.getCurrentTime ? event.target.getCurrentTime() : 0;
                 if (state === window.YT.PlayerState.PLAYING) {
                   onUserPlayRef.current?.(nowTime);
                 } else if (state === window.YT.PlayerState.PAUSED) {
                   onUserPauseRef.current?.(nowTime);
+                }
+              } else {
+                // Non-host participant tried to play or pause locally:
+                // Revert participant's player to match authoritative room state
+                if (lastSyncPlaybackRef.current) {
+                  const targetTime = computeAuthoritativeTime(lastSyncPlaybackRef.current);
+                  const shouldBePlaying = lastSyncPlaybackRef.current.isPlaying !== undefined
+                    ? lastSyncPlaybackRef.current.isPlaying
+                    : lastSyncPlaybackRef.current.status === 'playing';
+
+                  isProgrammaticUpdate.current = true;
+                  if (shouldBePlaying && state !== window.YT.PlayerState.PLAYING) {
+                    event.target.playVideo();
+                  } else if (!shouldBePlaying && state !== window.YT.PlayerState.PAUSED) {
+                    event.target.pauseVideo();
+                    event.target.seekTo(targetTime, true);
+                  }
                 }
               }
             },
@@ -279,81 +435,74 @@ export function useYouTubePlayer({
       }
       setIsReady(false);
     };
-  }, [containerId, enabled]);
+  }, [containerId, enabled, applySyncToPlayer]);
 
-  // Periodic time tracker
+  // Periodic ticker for:
+  // 1. Updating currentTime
+  // 2. Detecting Host native YouTube seek bar scrubbing
+  // 3. Continuous participant drift alignment
   useEffect(() => {
     if (!isReady) return;
+
     const interval = setInterval(() => {
-      if (playerRef.current && isReady && typeof playerRef.current.getCurrentTime === 'function') {
-        const time = playerRef.current.getCurrentTime();
-        setCurrentTime(time);
-        lastReportedTime.current = time;
+      const player = playerRef.current;
+      if (!player || typeof player.getCurrentTime !== 'function') return;
+
+      const curr = player.getCurrentTime();
+      const state = player.getPlayerState ? player.getPlayerState() : -1;
+      const isPlaying = state === (window.YT?.PlayerState?.PLAYING || 1);
+
+      setCurrentTime(curr);
+
+      const now = Date.now();
+      const dt = Math.max(0.01, (now - lastTickTime.current) / 1000);
+      lastTickTime.current = now;
+
+      // If programmatically updated, accept new position without broadcasting
+      if (isProgrammaticUpdate.current) {
+        isProgrammaticUpdate.current = false;
+        lastObservedTime.current = curr;
+        return;
       }
-    }, 500);
+
+      // If Host: detect native YouTube seek bar scrubbing
+      if (canControlRef.current) {
+        const expectedTime = lastObservedTime.current + (isPlaying ? dt : 0);
+        const jump = Math.abs(curr - expectedTime);
+
+        // If time jumped forward/backward by more than 1.2s (or >0.4s while paused)
+        const threshold = isPlaying ? 1.2 : 0.4;
+        if (jump > threshold) {
+          onUserSeekRef.current?.(curr);
+        }
+      } else {
+        // If Participant: maintain continuous alignment with host state
+        if (lastSyncPlaybackRef.current) {
+          const authTime = computeAuthoritativeTime(lastSyncPlaybackRef.current);
+          const drift = Math.abs(curr - authTime);
+          if (drift > 1.5) {
+            isProgrammaticUpdate.current = true;
+            try {
+              player.seekTo(authTime, true);
+            } catch (e) {
+              // ignore
+            }
+          }
+        }
+      }
+
+      lastObservedTime.current = curr;
+    }, 250);
 
     return () => clearInterval(interval);
   }, [isReady]);
 
-  // Sync state apply method
+  // Sync state apply method called by WatchRoom when sync_state arrives
   const syncWithServer = useCallback(
-    ({ videoId, status, targetTime }) => {
-      const player = playerRef.current;
-      if (!player || !isReady) return;
-
-      const cleanTargetVideoId = sanitizeVideoId(videoId);
-
-      // 1. Video ID check
-      if (cleanTargetVideoId && cleanTargetVideoId !== currentVideoIdRef.current) {
-        currentVideoIdRef.current = cleanTargetVideoId;
-        isProgrammaticUpdate.current = true;
-        setPlayerError(null);
-        try {
-          if (status === 'playing') {
-            player.loadVideoById({ videoId: cleanTargetVideoId, startSeconds: targetTime || 0 });
-          } else {
-            player.cueVideoById({ videoId: cleanTargetVideoId, startSeconds: targetTime || 0 });
-          }
-        } catch (e) {
-          console.warn('Error loading video by ID:', e);
-        }
-        return;
-      }
-
-      // 2. Play / Pause status check
-      const currentYTState = player.getPlayerState ? player.getPlayerState() : -1;
-      const isCurrentlyPlaying = currentYTState === (window.YT?.PlayerState?.PLAYING || 1);
-
-      if (status === 'playing' && !isCurrentlyPlaying) {
-        isProgrammaticUpdate.current = true;
-        try {
-          player.playVideo();
-        } catch (e) {
-          console.warn('Error playing video:', e);
-        }
-      } else if (status === 'paused' && isCurrentlyPlaying) {
-        isProgrammaticUpdate.current = true;
-        try {
-          player.pauseVideo();
-        } catch (e) {
-          console.warn('Error pausing video:', e);
-        }
-      }
-
-      // 3. Drift check (seek if difference > 1.5 seconds)
-      const localTime = player.getCurrentTime ? player.getCurrentTime() : 0;
-      const drift = Math.abs(localTime - targetTime);
-
-      if (drift > 1.5) {
-        isProgrammaticUpdate.current = true;
-        try {
-          player.seekTo(targetTime, true);
-        } catch (e) {
-          console.warn('Error seeking video:', e);
-        }
-      }
+    (playback) => {
+      applySyncToPlayer(playback);
     },
-    [isReady]
+    [applySyncToPlayer]
   );
 
   // Manual Seek
@@ -364,6 +513,7 @@ export function useYouTubePlayer({
     try {
       player.seekTo(seconds, true);
       setCurrentTime(seconds);
+      lastObservedTime.current = seconds;
     } catch (e) {
       console.warn('Error in manual seek:', e);
     }

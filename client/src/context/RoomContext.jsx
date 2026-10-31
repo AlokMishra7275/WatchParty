@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useState, useEffect, useCallback, useRef } from 'react';
 import { socketService } from '../services/socketService';
 
 export const RoomContext = createContext(null);
@@ -48,6 +48,17 @@ export function RoomProvider({ children }) {
     const onConnect = () => {
       setIsConnected(true);
       setConnectionError(null);
+      if (roomId && currentUser?.id) {
+        socketService.joinRoom({
+          roomId,
+          name: currentUser.name,
+          isCreating: false,
+          participantId: currentUser.id,
+        }).then((res) => {
+          if (res?.syncState) setSyncState(res.syncState);
+          if (res?.participant) setCurrentUser(res.participant);
+        }).catch((err) => console.warn('Auto-rejoin on reconnect failed:', err));
+      }
     };
 
     const onDisconnect = (reason) => {
@@ -224,8 +235,8 @@ export function RoomProvider({ children }) {
   }, []);
 
   const sendMessage = useCallback(async (text) => {
-    return await socketService.sendChat(text);
-  }, []);
+    return await socketService.sendChat(text, roomId);
+  }, [roomId]);
 
   // Helper flags
   const role = currentUser?.role || 'participant';

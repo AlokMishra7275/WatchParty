@@ -1,10 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send } from 'lucide-react';
+import { Send, AlertCircle, Loader2 } from 'lucide-react';
 import { formatClockTime } from '../utils/formatters';
 import { RoleBadge } from './RoleBadge';
 
 export function ChatBox({ messages = [], currentUserId, onSendMessage }) {
   const [text, setText] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [chatError, setChatError] = useState('');
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -15,15 +17,31 @@ export function ChatBox({ messages = [], currentUserId, onSendMessage }) {
     scrollToBottom();
   }, [messages]);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!text.trim()) return;
-    onSendMessage(text.trim());
-    setText('');
+    const trimmed = text.trim();
+    if (!trimmed || isSubmitting) return;
+
+    setIsSubmitting(true);
+    setChatError('');
+
+    try {
+      const res = await onSendMessage(trimmed);
+      if (res && res.success === false) {
+        setChatError(res.error || 'Failed to send message. Please try again.');
+      } else {
+        setText('');
+      }
+    } catch (err) {
+      setChatError(err.message || 'Error delivering message.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const addEmoji = (emoji) => {
     setText((prev) => prev + emoji);
+    setChatError('');
   };
 
   return (
@@ -81,13 +99,29 @@ export function ChatBox({ messages = [], currentUserId, onSendMessage }) {
           <button
             key={emoji}
             type="button"
+            disabled={isSubmitting}
             onClick={() => addEmoji(emoji)}
-            className="px-2 py-1 text-sm rounded-lg hover:bg-[var(--bg-card-hover)] transition-colors cursor-pointer"
+            className="px-2 py-1 text-sm rounded-lg hover:bg-[var(--bg-card-hover)] transition-colors cursor-pointer disabled:opacity-50"
           >
             {emoji}
           </button>
         ))}
       </div>
+
+      {/* Chat Error Alert */}
+      {chatError && (
+        <div className="px-3 py-2 bg-red-50 dark:bg-red-950/60 border-t border-red-200 dark:border-red-900/50 flex items-center gap-2 text-xs text-red-600 dark:text-red-300">
+          <AlertCircle size={14} className="flex-shrink-0" />
+          <span className="flex-1">{chatError}</span>
+          <button
+            type="button"
+            onClick={() => setChatError('')}
+            className="text-red-400 hover:text-red-600 text-xs font-bold cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Input Box */}
       <form onSubmit={handleSubmit} className="p-3 border-t theme-border bg-[var(--bg-card-subtle)]">
@@ -95,17 +129,21 @@ export function ChatBox({ messages = [], currentUserId, onSendMessage }) {
           <input
             type="text"
             value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Send a message..."
+            onChange={(e) => {
+              setText(e.target.value);
+              if (chatError) setChatError('');
+            }}
+            placeholder={isSubmitting ? 'Sending...' : 'Send a message...'}
             maxLength={500}
-            className="theme-input w-full pl-3 pr-10 py-2.5 rounded-xl border text-sm placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all shadow-sm"
+            disabled={isSubmitting}
+            className="theme-input w-full pl-3 pr-10 py-2.5 rounded-xl border text-sm placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all shadow-sm disabled:opacity-60"
           />
           <button
             type="submit"
-            disabled={!text.trim()}
+            disabled={!text.trim() || isSubmitting}
             className="absolute right-1.5 p-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-30 disabled:hover:bg-indigo-600 transition-all cursor-pointer"
           >
-            <Send size={14} />
+            {isSubmitting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
           </button>
         </div>
       </form>

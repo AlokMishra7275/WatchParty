@@ -56,14 +56,19 @@ class RoomManager {
     return role === ROLES.HOST || role === ROLES.MODERATOR;
   }
 
+  canSendChat(role) {
+    return [ROLES.HOST, ROLES.MODERATOR, ROLES.PARTICIPANT].includes(role);
+  }
+
   /**
    * Calculate authoritative current playback time
    */
   getAuthoritativePlaybackTime(room) {
     if (!room || !room.playback) return 0;
-    const { status, currentTime, lastUpdated, playbackRate = 1 } = room.playback;
+    const { status, currentTime, lastUpdated, updatedAt, playbackRate = 1 } = room.playback;
+    const updateTime = lastUpdated || updatedAt || Date.now();
     if (status === PLAYBACK_STATUS.PLAYING) {
-      const elapsedSeconds = ((Date.now() - lastUpdated) / 1000) * playbackRate;
+      const elapsedSeconds = ((Date.now() - updateTime) / 1000) * playbackRate;
       return Math.max(0, currentTime + elapsedSeconds);
     }
     return Math.max(0, currentTime);
@@ -73,16 +78,25 @@ class RoomManager {
    * Format room state for client synchronization
    */
   getSyncState(room) {
+    const isPlaying = room.playback.status === PLAYBACK_STATUS.PLAYING;
+    const authoritativeTime = this.getAuthoritativePlaybackTime(room);
+    const now = Date.now();
+    const updateTime = room.playback.updatedAt || room.playback.lastUpdated || now;
+
     return {
       roomId: room.roomId,
       hostId: room.hostId,
       playback: {
         videoId: room.playback.videoId,
         status: room.playback.status,
-        currentTime: this.getAuthoritativePlaybackTime(room),
-        lastUpdated: room.playback.lastUpdated,
-        serverTimestamp: Date.now(),
+        isPlaying,
+        currentTime: authoritativeTime,
+        rawCurrentTime: room.playback.currentTime,
+        updatedAt: updateTime,
+        lastUpdated: updateTime,
+        serverTimestamp: now,
         playbackRate: room.playback.playbackRate || 1,
+        hostId: room.hostId,
       },
       participants: Array.from(room.participants.values()).map(p => ({
         id: p.id,
@@ -132,7 +146,9 @@ class RoomManager {
       playback: {
         videoId,
         status: PLAYBACK_STATUS.PAUSED,
+        isPlaying: false,
         currentTime: 0,
+        updatedAt: Date.now(),
         lastUpdated: Date.now(),
         playbackRate: 1,
       },
@@ -164,9 +180,20 @@ class RoomManager {
       this.roomCleanupTimers.delete(cleanId);
     }
 
-    // Clean up if socket was previously registered in a room
+    // If socket was already registered, handle appropriately
     if (socketId && this.socketMap.has(socketId)) {
-      this.leaveRoom(socketId);
+      const existingMapping = this.socketMap.get(socketId);
+      if (existingMapping.roomId !== cleanId) {
+        // Socket was in a DIFFERENT room, leave old room first
+        this.leaveRoom(socketId);
+      } else {
+        // Socket is ALREADY registered in this room!
+        const existingParticipant = room.participants.get(existingMapping.participantId);
+        if (existingParticipant) {
+          existingParticipant.isOnline = true;
+          return { success: true, room, participant: existingParticipant, isReconnection: true };
+        }
+      }
     }
 
     // Check for reconnection of existing participant in this room
@@ -184,6 +211,9 @@ class RoomManager {
       }
       existing.socketId = socketId;
       existing.isOnline = true;
+      if (room.hostId === existing.id) {
+        existing.role = ROLES.HOST;
+      }
       if (socketId) {
         this.socketMap.set(socketId, { roomId: cleanId, participantId: existing.id });
       }
@@ -195,11 +225,18 @@ class RoomManager {
       : `Guest ${room.participants.size + 1}`;
 
     const participantId = generateUniqueId('user');
+    // If the room currently has no participants, assign this user as Host
+    const isFirstParticipant = room.participants.size === 0;
+    const role = isFirstParticipant ? ROLES.HOST : ROLES.PARTICIPANT;
+    if (isFirstParticipant) {
+      room.hostId = participantId;
+    }
+
     const participant = {
       id: participantId,
       socketId,
       name: safeName,
-      role: ROLES.PARTICIPANT, // default role
+      role,
       isOnline: true,
       joinedAt: Date.now(),
     };
@@ -384,7 +421,9 @@ class RoomManager {
           : this.getAuthoritativePlaybackTime(room);
 
         room.playback.status = PLAYBACK_STATUS.PLAYING;
+        room.playback.isPlaying = true;
         room.playback.currentTime = targetTime;
+        room.playback.updatedAt = now;
         room.playback.lastUpdated = now;
         break;
       }
@@ -395,7 +434,9 @@ class RoomManager {
           : this.getAuthoritativePlaybackTime(room);
 
         room.playback.status = PLAYBACK_STATUS.PAUSED;
+        room.playback.isPlaying = false;
         room.playback.currentTime = targetTime;
+        room.playback.updatedAt = now;
         room.playback.lastUpdated = now;
         break;
       }
@@ -405,8 +446,9 @@ class RoomManager {
           return { success: false, error: 'Invalid seek position' };
         }
         room.playback.currentTime = payload.currentTime;
+        room.playback.updatedAt = now;
         room.playback.lastUpdated = now;
-        // Keep current status (playing or paused)
+        room.playback.isPlaying = room.playback.status === PLAYBACK_STATUS.PLAYING;
         break;
       }
 
@@ -420,6 +462,8 @@ class RoomManager {
         room.playback.videoId = validation.videoId;
         room.playback.currentTime = 0;
         room.playback.status = PLAYBACK_STATUS.PLAYING; // start auto-playing new video
+        room.playback.isPlaying = true;
+        room.playback.updatedAt = now;
         room.playback.lastUpdated = now;
         break;
       }
@@ -673,8 +717,18 @@ class RoomManager {
     }
 
     const { room, participant } = info;
-    if (room.roomId !== roomId) {
+    const cleanRoomId = String(roomId || '').trim().toLowerCase();
+    if (room.roomId !== cleanRoomId) {
       return { success: false, error: 'Room mismatch' };
+    }
+
+    if (!participant || !participant.id) {
+      return { success: false, error: 'Participant not recognized' };
+    }
+
+    // Role check: Host, Moderator, and Participant are all allowed to chat
+    if (!this.canSendChat(participant.role)) {
+      return { success: false, error: 'Unauthorized: Chat is disabled for this user' };
     }
 
     if (!text || typeof text !== 'string' || !text.trim()) {

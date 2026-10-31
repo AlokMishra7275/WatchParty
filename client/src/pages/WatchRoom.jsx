@@ -218,9 +218,6 @@ export function WatchRoom() {
     playerError,
     autoplayBlocked,
     syncWithServer,
-    seekTo,
-    playVideo: localPlay,
-    pauseVideo: localPause,
     toggleMute,
   } = useYouTubePlayer({
     containerId: 'yt-player-host',
@@ -234,17 +231,9 @@ export function WatchRoom() {
 
   // Apply server authoritative sync state to player
   useEffect(() => {
-    if (!syncState || !isReady) return;
-
-    const { playback } = syncState;
-    if (!playback) return;
-
-    syncWithServer({
-      videoId: playback.videoId,
-      status: playback.status,
-      targetTime: playback.currentTime,
-    });
-  }, [syncState, isReady, syncWithServer]);
+    if (!syncState?.playback) return;
+    syncWithServer(syncState.playback);
+  }, [syncState, syncWithServer]);
 
   // Copy Room Link
   const handleCopyLink = async () => {
@@ -310,12 +299,8 @@ export function WatchRoom() {
 
   const handleForceResync = () => {
     if (syncState?.playback) {
-      seekTo(syncState.playback.currentTime);
-      if (syncState.playback.status === 'playing') {
-        localPlay();
-      } else {
-        localPause();
-      }
+      syncWithServer(syncState.playback);
+      showToast('Aligned with host stream', 'info');
     }
   };
 

@@ -235,6 +235,149 @@ describe('Socket.IO Real-time Integration & REST Tests', () => {
     expect(message.senderRole).toBe('host');
   });
 
+  test('Host seek synchronizes all participants to exact seek position', async () => {
+    const alice = await createConnectedClient();
+    const resAlice = await emitWithAck(alice, 'join_room', { name: 'Alice', isCreating: true });
+    const roomId = resAlice.roomId;
+
+    const bob = await createConnectedClient();
+    await emitWithAck(bob, 'join_room', { roomId, name: 'Bob' });
+
+    const bobSeekPromise = new Promise((resolve) => {
+      bob.on('sync_state', (state) => {
+        if (state.playback.currentTime >= 75) {
+          resolve(state);
+        }
+      });
+    });
+
+    const seekRes = await emitWithAck(alice, 'seek', { currentTime: 75 });
+    expect(seekRes.success).toBe(true);
+
+    const syncState = await bobSeekPromise;
+    expect(syncState.playback.currentTime).toBeGreaterThanOrEqual(75);
+    expect(syncState.playback.updatedAt).toBeDefined();
+    expect(syncState.playback.hostId).toBe(resAlice.participant.id);
+  });
+
+  test('Host pause synchronizes participants to exact paused timestamp', async () => {
+    const alice = await createConnectedClient();
+    const resAlice = await emitWithAck(alice, 'join_room', { name: 'Alice', isCreating: true });
+    const roomId = resAlice.roomId;
+
+    const bob = await createConnectedClient();
+    await emitWithAck(bob, 'join_room', { roomId, name: 'Bob' });
+
+    // Play first
+    await emitWithAck(alice, 'play', { currentTime: 20 });
+
+    const bobPausePromise = new Promise((resolve) => {
+      bob.on('sync_state', (state) => {
+        if (state.playback.status === 'paused') {
+          resolve(state);
+        }
+      });
+    });
+
+    const pauseRes = await emitWithAck(alice, 'pause', { currentTime: 33 });
+    expect(pauseRes.success).toBe(true);
+
+    const syncState = await bobPausePromise;
+    expect(syncState.playback.status).toBe('paused');
+    expect(syncState.playback.isPlaying).toBe(false);
+    expect(syncState.playback.currentTime).toBe(33);
+  });
+
+  test('Host changes video and all participants receive new video ID', async () => {
+    const alice = await createConnectedClient();
+    const resAlice = await emitWithAck(alice, 'join_room', { name: 'Alice', isCreating: true });
+    const roomId = resAlice.roomId;
+
+    const bob = await createConnectedClient();
+    await emitWithAck(bob, 'join_room', { roomId, name: 'Bob' });
+
+    const bobVideoPromise = new Promise((resolve) => {
+      bob.on('sync_state', (state) => {
+        if (state.playback.videoId === 'jNQXAC9IVRw') {
+          resolve(state);
+        }
+      });
+    });
+
+    const changeRes = await emitWithAck(alice, 'change_video', {
+      url: 'https://www.youtube.com/watch?v=jNQXAC9IVRw',
+    });
+    expect(changeRes.success).toBe(true);
+
+    const syncState = await bobVideoPromise;
+    expect(syncState.playback.videoId).toBe('jNQXAC9IVRw');
+    expect(syncState.playback.currentTime).toBe(0);
+    expect(syncState.playback.isPlaying).toBe(true);
+  });
+
+  test('Host, Moderator, and Participant can all send chat messages', async () => {
+    const alice = await createConnectedClient();
+    const resAlice = await emitWithAck(alice, 'join_room', { name: 'Alice', isCreating: true });
+    const roomId = resAlice.roomId;
+
+    const bob = await createConnectedClient();
+    const resBob = await emitWithAck(bob, 'join_room', { roomId, name: 'Bob' });
+
+    const charlie = await createConnectedClient();
+    const resCharlie = await emitWithAck(charlie, 'join_room', { roomId, name: 'Charlie' });
+
+    // Alice promotes Bob to Moderator
+    await emitWithAck(alice, 'assign_role', { targetParticipantId: resBob.participant.id, newRole: 'moderator' });
+
+    // 1. Host sends message
+    const hostChatRes = await emitWithAck(alice, 'send_chat', { text: 'Host message', roomId });
+    expect(hostChatRes.success).toBe(true);
+    expect(hostChatRes.message.senderRole).toBe('host');
+
+    // 2. Moderator sends message
+    const modChatRes = await emitWithAck(bob, 'send_chat', { text: 'Moderator message', roomId });
+    expect(modChatRes.success).toBe(true);
+    expect(modChatRes.message.senderRole).toBe('moderator');
+
+    // 3. Participant sends message
+    const partChatRes = await emitWithAck(charlie, 'send_chat', { text: 'Participant message', roomId });
+    expect(partChatRes.success).toBe(true);
+    expect(partChatRes.message.senderRole).toBe('participant');
+  });
+
+  test('Reconnection restores authoritative state and preserves host role', async () => {
+    const alice = await createConnectedClient();
+    const resAlice = await emitWithAck(alice, 'join_room', { name: 'Alice', isCreating: true });
+    const roomId = resAlice.roomId;
+    const aliceId = resAlice.participant.id;
+
+    // Alice plays at 60s
+    await emitWithAck(alice, 'play', { currentTime: 60 });
+
+    // Alice disconnects
+    alice.disconnect();
+
+    // Alice reconnects with a fresh socket connection
+    const aliceReconnected = await createConnectedClient();
+    const reconnectRes = await emitWithAck(aliceReconnected, 'join_room', {
+      roomId,
+      name: 'Alice',
+      isCreating: false,
+      participantId: aliceId,
+    });
+
+    expect(reconnectRes.success).toBe(true);
+    expect(reconnectRes.participant.id).toBe(aliceId);
+    expect(reconnectRes.participant.role).toBe('host');
+    expect(reconnectRes.syncState.playback.status).toBe('playing');
+    expect(reconnectRes.syncState.playback.currentTime).toBeGreaterThanOrEqual(60);
+
+    // Reconnected host can still send chat and control playback
+    const chatRes = await emitWithAck(aliceReconnected, 'send_chat', { text: 'Back online!', roomId });
+    expect(chatRes.success).toBe(true);
+    expect(chatRes.message.senderRole).toBe('host');
+  });
+
   // REST API Tests
   describe('REST Endpoints', () => {
     test('GET /api/health returns ok status', async () => {
