@@ -135,6 +135,7 @@ export function useYouTubePlayer({
   onUserSeek,
 }) {
   const playerRef = useRef(null);
+  const isPlayerReadyRef = useRef(false);
   const [isReady, setIsReady] = useState(false);
   const [playerState, setPlayerState] = useState(-1);
   const [currentTime, setCurrentTime] = useState(0);
@@ -145,19 +146,13 @@ export function useYouTubePlayer({
 
   // Flags to prevent synchronization feedback loops
   const isProgrammaticUpdate = useRef(false);
-  const currentVideoIdRef = useRef(sanitizeVideoId(initialVideoId));
+  const currentLoadedVideoIdRef = useRef(sanitizeVideoId(initialVideoId));
   const lastSyncPlaybackRef = useRef(null);
   const pendingSyncRef = useRef(null);
 
   // Time tracking for detecting native seek bar scrubbing by host
   const lastObservedTime = useRef(0);
-  const lastTickTime = useRef(Date.now());
-
-  useEffect(() => {
-    if (initialVideoId) {
-      currentVideoIdRef.current = sanitizeVideoId(initialVideoId);
-    }
-  }, [initialVideoId]);
+  const lastTickTime = useRef(0);
 
   // Keep fresh references to avoid stale closures in player callbacks
   const canControlRef = useRef(canControl);
@@ -175,7 +170,7 @@ export function useYouTubePlayer({
   // Internal apply sync helper
   const applySyncToPlayer = useCallback((playback) => {
     const player = playerRef.current;
-    if (!player || typeof player.getPlayerState !== 'function') {
+    if (!player || !isPlayerReadyRef.current || typeof player.getPlayerState !== 'function') {
       pendingSyncRef.current = playback;
       return;
     }
@@ -187,11 +182,21 @@ export function useYouTubePlayer({
 
     const cleanTargetVideoId = sanitizeVideoId(videoId);
 
-    // 1. Video ID check
-    if (cleanTargetVideoId && cleanTargetVideoId !== currentVideoIdRef.current) {
-      currentVideoIdRef.current = cleanTargetVideoId;
+    // 1. Video ID check: compare against what is currently loaded in player
+    let currentlyLoaded = currentLoadedVideoIdRef.current;
+    if (!currentlyLoaded && typeof player.getVideoData === 'function') {
+      const data = player.getVideoData();
+      if (data && data.video_id) {
+        currentlyLoaded = data.video_id;
+        currentLoadedVideoIdRef.current = currentlyLoaded;
+      }
+    }
+
+    if (cleanTargetVideoId && cleanTargetVideoId !== currentlyLoaded) {
+      currentLoadedVideoIdRef.current = cleanTargetVideoId;
       isProgrammaticUpdate.current = true;
       setPlayerError(null);
+      setCurrentTime(0);
       try {
         if (isCurrentlyPlaying) {
           player.loadVideoById({ videoId: cleanTargetVideoId, startSeconds: targetTime });
@@ -260,7 +265,7 @@ export function useYouTubePlayer({
       if (typeof player.setPlaybackRate === 'function') {
         try {
           if (player.getPlaybackRate() !== 1) player.setPlaybackRate(1);
-        } catch (e) {
+        } catch (_e) {
           // ignore
         }
       }
@@ -321,13 +326,15 @@ export function useYouTubePlayer({
       mountSlot.className = 'w-full h-full';
       hostEl.appendChild(mountSlot);
 
-      const targetVideoId = currentVideoIdRef.current || 'dQw4w9WgXcQ';
+      const targetVideoId = sanitizeVideoId(currentLoadedVideoIdRef.current || initialVideoId || 'dQw4w9WgXcQ');
+      currentLoadedVideoIdRef.current = targetVideoId;
 
       try {
         playerRef.current = new window.YT.Player(mountSlot, {
           height: '100%',
           width: '100%',
           videoId: targetVideoId,
+          host: 'https://www.youtube.com',
           playerVars: {
             autoplay: 1,
             controls: 1, // Keep YouTube native player controls and native timer visible
@@ -335,14 +342,20 @@ export function useYouTubePlayer({
             modestbranding: 1,
             playsinline: 1,
             enablejsapi: 1,
-            origin: window.location.origin || undefined,
+            origin: typeof window !== 'undefined' ? window.location.origin : undefined,
+            widget_referrer: typeof window !== 'undefined' ? window.location.origin : undefined,
           },
           events: {
             onReady: (event) => {
               if (isCancelled) return;
+              isPlayerReadyRef.current = true;
               setIsReady(true);
               setPlayerError(null);
               setDuration(event.target.getDuration ? event.target.getDuration() : 0);
+              if (event.target.getVideoData) {
+                const vid = event.target.getVideoData().video_id;
+                if (vid) currentLoadedVideoIdRef.current = vid;
+              }
 
               // Apply any pending sync received before player was ready
               if (pendingSyncRef.current) {
@@ -421,6 +434,7 @@ export function useYouTubePlayer({
 
     return () => {
       isCancelled = true;
+      isPlayerReadyRef.current = false;
       if (playerRef.current && typeof playerRef.current.destroy === 'function') {
         try {
           playerRef.current.destroy();
@@ -446,7 +460,7 @@ export function useYouTubePlayer({
 
     const interval = setInterval(() => {
       const player = playerRef.current;
-      if (!player || typeof player.getCurrentTime !== 'function') return;
+      if (!player || !isPlayerReadyRef.current || typeof player.getCurrentTime !== 'function') return;
 
       const curr = player.getCurrentTime();
       const state = player.getPlayerState ? player.getPlayerState() : -1;
@@ -484,7 +498,7 @@ export function useYouTubePlayer({
             isProgrammaticUpdate.current = true;
             try {
               player.seekTo(authTime, true);
-            } catch (e) {
+            } catch (_e) {
               // ignore
             }
           }
@@ -508,7 +522,7 @@ export function useYouTubePlayer({
   // Manual Seek
   const seekTo = useCallback((seconds) => {
     const player = playerRef.current;
-    if (!player || typeof player.seekTo !== 'function') return;
+    if (!player || !isPlayerReadyRef.current || typeof player.seekTo !== 'function') return;
     isProgrammaticUpdate.current = true;
     try {
       player.seekTo(seconds, true);
@@ -522,7 +536,7 @@ export function useYouTubePlayer({
   // Manual Play
   const playVideo = useCallback(() => {
     const player = playerRef.current;
-    if (!player || typeof player.playVideo !== 'function') return;
+    if (!player || !isPlayerReadyRef.current || typeof player.playVideo !== 'function') return;
     isProgrammaticUpdate.current = true;
     try {
       player.playVideo();
@@ -534,7 +548,7 @@ export function useYouTubePlayer({
   // Manual Pause
   const pauseVideo = useCallback(() => {
     const player = playerRef.current;
-    if (!player || typeof player.pauseVideo !== 'function') return;
+    if (!player || !isPlayerReadyRef.current || typeof player.pauseVideo !== 'function') return;
     isProgrammaticUpdate.current = true;
     try {
       player.pauseVideo();
@@ -546,7 +560,7 @@ export function useYouTubePlayer({
   // Mute / Unmute
   const toggleMute = useCallback(() => {
     const player = playerRef.current;
-    if (!player) return;
+    if (!player || !isPlayerReadyRef.current) return;
     try {
       if (player.isMuted()) {
         player.unMute();
@@ -558,6 +572,30 @@ export function useYouTubePlayer({
       }
     } catch (e) {
       console.warn('Error in toggleMute:', e);
+    }
+  }, []);
+
+  // Direct load new video
+  const loadVideo = useCallback((videoIdOrUrl, startSeconds = 0, autoplay = true) => {
+    const player = playerRef.current;
+    const cleanId = sanitizeVideoId(videoIdOrUrl);
+    if (!cleanId) return;
+
+    currentLoadedVideoIdRef.current = cleanId;
+    isProgrammaticUpdate.current = true;
+    setPlayerError(null);
+    setCurrentTime(startSeconds);
+
+    if (player && isPlayerReadyRef.current) {
+      try {
+        if (autoplay) {
+          player.loadVideoById({ videoId: cleanId, startSeconds });
+        } else {
+          player.cueVideoById({ videoId: cleanId, startSeconds });
+        }
+      } catch (err) {
+        console.warn('Error in loadVideo:', err);
+      }
     }
   }, []);
 
@@ -574,6 +612,7 @@ export function useYouTubePlayer({
     seekTo,
     playVideo,
     pauseVideo,
+    loadVideo,
     toggleMute,
     setPlayerError,
   };

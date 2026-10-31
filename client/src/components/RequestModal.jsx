@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { X, Film, Play, Pause, FastForward, AlertCircle } from 'lucide-react';
 import { extractYouTubeVideoId } from '../utils/youtube';
 
-export function RequestModal({ isOpen, onClose, onSubmitRequest, currentDuration = 0 }) {
+export function RequestModal({ isOpen, onClose, onSubmitRequest, _currentDuration = 0 }) {
   const [actionType, setActionType] = useState('change_video');
   const [videoUrl, setVideoUrl] = useState('');
   const [seekMinutes, setSeekMinutes] = useState('0');

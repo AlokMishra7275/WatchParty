@@ -134,8 +134,8 @@ function setupSocketHandlers(io, roomManager) {
       io.to(room.roomId).emit('sync_state', roomManager.getSyncState(room));
     });
 
-    // 5. CHANGE VIDEO
-    socket.on('change_video', ({ url, videoId }, callback) => {
+    // 5. CHANGE VIDEO (with video:change alias)
+    const handleChangeVideo = ({ url, videoId } = {}, callback) => {
       const info = roomManager.getParticipantBySocket(socket.id);
       if (!info) {
         const error = 'Not joined in any active room.';
@@ -144,7 +144,7 @@ function setupSocketHandlers(io, roomManager) {
         return;
       }
 
-      const { room } = info;
+      const { room, participant } = info;
       const result = roomManager.updatePlayback(room.roomId, 'change_video', { url, videoId }, socket.id);
 
       if (!result.success) {
@@ -153,12 +153,25 @@ function setupSocketHandlers(io, roomManager) {
         return;
       }
 
-      if (typeof callback === 'function') callback({ success: true, videoId: room.playback.videoId });
-      io.to(room.roomId).emit('sync_state', roomManager.getSyncState(room));
-    });
+      const payload = {
+        videoId: room.playback.videoId,
+        changedBy: { id: participant.id, name: participant.name, role: participant.role },
+        currentTime: 0,
+        isPlaying: true,
+      };
 
-    // 6. REQUEST ACTION (APPROVAL WORKFLOW)
-    socket.on('request_action', ({ action, payload }, callback) => {
+      if (typeof callback === 'function') callback({ success: true, ...payload });
+
+      io.to(room.roomId).emit('video_changed', payload);
+      io.to(room.roomId).emit('video:changed', payload);
+      io.to(room.roomId).emit('sync_state', roomManager.getSyncState(room));
+    };
+
+    socket.on('change_video', handleChangeVideo);
+    socket.on('video:change', handleChangeVideo);
+
+    // 6. REQUEST ACTION (APPROVAL WORKFLOW, with video:request alias)
+    const handleRequestAction = ({ action = 'change_video', payload = {}, url, videoId } = {}, callback) => {
       const info = roomManager.getParticipantBySocket(socket.id);
       if (!info) {
         const error = 'Not joined in any active room.';
@@ -167,8 +180,14 @@ function setupSocketHandlers(io, roomManager) {
         return;
       }
 
+      // Normalize if called via video:request with direct url/videoId
+      const resolvedAction = action || 'change_video';
+      const resolvedPayload = { ...payload };
+      if (url && !resolvedPayload.url) resolvedPayload.url = url;
+      if (videoId && !resolvedPayload.videoId) resolvedPayload.videoId = videoId;
+
       const { room } = info;
-      const result = roomManager.requestAction(room.roomId, action, payload, socket.id);
+      const result = roomManager.requestAction(room.roomId, resolvedAction, resolvedPayload, socket.id);
 
       if (!result.success) {
         if (typeof callback === 'function') callback({ success: false, error: result.error });
@@ -179,17 +198,23 @@ function setupSocketHandlers(io, roomManager) {
       if (typeof callback === 'function') callback({ success: true, request: result.request });
 
       // Notify the room of the new approval request
-      io.to(room.roomId).emit('action_requested', {
+      const actionMsg = {
         request: result.request,
         message: `${result.request.requesterName} requested to ${result.request.action.replace('_', ' ')}.`,
-      });
+      };
+
+      io.to(room.roomId).emit('action_requested', actionMsg);
+      io.to(room.roomId).emit('video:request:new', actionMsg);
 
       // Update room state with new pending request
       io.to(room.roomId).emit('sync_state', roomManager.getSyncState(room));
-    });
+    };
 
-    // 7. APPROVE REQUEST
-    socket.on('approve_request', ({ requestId }, callback) => {
+    socket.on('request_action', handleRequestAction);
+    socket.on('video:request', handleRequestAction);
+
+    // 7. APPROVE REQUEST (with video:request:accept alias)
+    const handleApproveRequest = ({ requestId } = {}, callback) => {
       const info = roomManager.getParticipantBySocket(socket.id);
       if (!info) {
         const error = 'Not joined in any active room.';
@@ -209,18 +234,38 @@ function setupSocketHandlers(io, roomManager) {
 
       if (typeof callback === 'function') callback({ success: true, request: result.request });
 
-      io.to(room.roomId).emit('request_resolved', {
+      const resolveMsg = {
         request: result.request,
+        status: 'approved',
         message: `Request by ${result.request.requesterName} was approved by ${result.request.resolvedBy.name}.`,
         executed: true,
-      });
+      };
+
+      io.to(room.roomId).emit('request_resolved', resolveMsg);
+      io.to(room.roomId).emit('video:request:status', resolveMsg);
+
+      // If change_video was executed, also emit video_changed
+      if (result.request.action === 'change_video') {
+        const videoPayload = {
+          videoId: room.playback.videoId,
+          changedBy: result.request.resolvedBy,
+          currentTime: 0,
+          isPlaying: true,
+        };
+        io.to(room.roomId).emit('video_changed', videoPayload);
+        io.to(room.roomId).emit('video:changed', videoPayload);
+      }
 
       // State changed, broadcast new playback state
       io.to(room.roomId).emit('sync_state', roomManager.getSyncState(room));
-    });
+    };
 
-    // 8. REJECT REQUEST
-    socket.on('reject_request', ({ requestId }, callback) => {
+    socket.on('approve_request', handleApproveRequest);
+    socket.on('video:request:accept', handleApproveRequest);
+    socket.on('video:request:approve', handleApproveRequest);
+
+    // 8. REJECT REQUEST (with video:request:reject alias)
+    const handleRejectRequest = ({ requestId } = {}, callback) => {
       const info = roomManager.getParticipantBySocket(socket.id);
       if (!info) {
         const error = 'Not joined in any active room.';
@@ -240,14 +285,21 @@ function setupSocketHandlers(io, roomManager) {
 
       if (typeof callback === 'function') callback({ success: true, request: result.request });
 
-      io.to(room.roomId).emit('request_resolved', {
+      const resolveMsg = {
         request: result.request,
+        status: 'rejected',
         message: `Request by ${result.request.requesterName} was rejected by ${result.request.resolvedBy.name}.`,
         executed: false,
-      });
+      };
+
+      io.to(room.roomId).emit('request_resolved', resolveMsg);
+      io.to(room.roomId).emit('video:request:status', resolveMsg);
 
       io.to(room.roomId).emit('sync_state', roomManager.getSyncState(room));
-    });
+    };
+
+    socket.on('reject_request', handleRejectRequest);
+    socket.on('video:request:reject', handleRejectRequest);
 
     // 9. ASSIGN ROLE
     socket.on('assign_role', ({ targetParticipantId, newRole }, callback) => {

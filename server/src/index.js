@@ -24,6 +24,7 @@ const configuredOrigins = (config.clientUrl || '')
 
 const defaultAllowedOrigins = [
   ...configuredOrigins,
+  'https://watch-party-blush-eight.vercel.app',
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   'http://localhost:3000',
@@ -39,7 +40,7 @@ function isOriginAllowed(origin) {
   if (config.nodeEnv === 'development') return true;
 
   // Allow Vercel preview and production deployments (*.vercel.app)
-  if (/^https:\/\/[a-zA-Z0-9_-]+\.vercel\.app$/.test(norm)) return true;
+  if (/^https:\/\/[a-zA-Z0-9_.-]+\.vercel\.app$/.test(norm)) return true;
 
   return false;
 }
@@ -72,6 +73,7 @@ const io = new Server(server, {
     methods: ['GET', 'POST'],
     credentials: true,
   },
+  transports: ['websocket', 'polling'],
   pingTimeout: 30000,
   pingInterval: 25000,
 });

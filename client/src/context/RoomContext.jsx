@@ -120,8 +120,22 @@ export function RoomProvider({ children }) {
     };
 
     const onRequestResolved = (data) => {
-      const type = data.executed ? 'success' : 'warning';
-      showToast(data.message, type);
+      const isMine = data.request?.requesterId === currentUser?.id;
+      if (isMine) {
+        if (data.status === 'approved' || data.executed) {
+          showToast('🎉 Your request was accepted by the host!', 'success');
+        } else {
+          showToast('Your request was rejected by the host.', 'warning');
+        }
+      } else {
+        const type = data.executed ? 'success' : 'warning';
+        showToast(data.message, type);
+      }
+    };
+
+    const onVideoChanged = (data) => {
+      const name = data.changedBy?.name || 'Host';
+      showToast(`📺 Video changed by ${name}`, 'info');
     };
 
     const onChatMessage = (data) => {
@@ -142,6 +156,7 @@ export function RoomProvider({ children }) {
     socket.on('participant_removed', onParticipantRemoved);
     socket.on('action_requested', onActionRequested);
     socket.on('request_resolved', onRequestResolved);
+    socket.on('video_changed', onVideoChanged);
     socket.on('chat_message', onChatMessage);
     socket.on('error_message', onErrorMessage);
 
@@ -160,6 +175,7 @@ export function RoomProvider({ children }) {
       socket.off('participant_removed', onParticipantRemoved);
       socket.off('action_requested', onActionRequested);
       socket.off('request_resolved', onRequestResolved);
+      socket.off('video_changed', onVideoChanged);
       socket.off('chat_message', onChatMessage);
       socket.off('error_message', onErrorMessage);
     };

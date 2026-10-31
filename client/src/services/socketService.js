@@ -1,15 +1,10 @@
 import { io } from 'socket.io-client';
+import { SERVER_URL } from './api';
 
 class SocketService {
   constructor() {
     this.socket = null;
-    const envUrl = (import.meta.env.VITE_SERVER_URL || '').trim().replace(/\/+$/, '');
-
-    this.serverUrl = envUrl || (
-      typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-        ? 'http://localhost:5000'
-        : (typeof window !== 'undefined' ? window.location.origin : '')
-    );
+    this.serverUrl = SERVER_URL;
   }
 
   connect() {

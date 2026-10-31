@@ -281,16 +281,20 @@ export function WatchRoom() {
       setIsChangingVideo(false);
       if (res && res.success) {
         setVideoInput('');
+        showToast('Video changed successfully! 🎬', 'success');
       } else {
         setVideoInputError(res?.error || 'Failed to change video');
       }
     } else {
+      setIsChangingVideo(true);
       const res = await requestPlaybackAction('change_video', {
         url: urlToUse,
         videoId: validation.videoId,
       });
+      setIsChangingVideo(false);
       if (res && res.success) {
         setVideoInput('');
+        showToast('Video change request sent to host! ⏳', 'info');
       } else {
         setVideoInputError(res?.error || 'Failed to submit request');
       }
@@ -409,11 +413,11 @@ export function WatchRoom() {
             <div className="hidden lg:flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
               <span
                 className={`w-2 h-2 rounded-full ${
-                  isConnected ? 'bg-emerald-500 shadow-sm shadow-emerald-500 animate-pulse' : 'bg-red-500'
+                  isConnected ? 'bg-emerald-500 shadow-sm shadow-emerald-500 animate-pulse' : 'bg-amber-500 animate-pulse'
                 }`}
               />
               <span className="text-[11px] font-semibold">
-                {isConnected ? 'In Sync' : 'Disconnected'}
+                {isConnected ? 'In Sync' : 'Connecting...'}
               </span>
             </div>
           </div>
@@ -468,6 +472,14 @@ export function WatchRoom() {
       <main className="flex-1 max-w-[1700px] w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* LEFT / MAIN COLUMN: Video & Controls (col-span-8) */}
         <section className="lg:col-span-8 flex flex-col gap-4">
+          {/* Reconnecting / Cold-Start Indicator */}
+          {!isConnected && roomId && (
+            <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs">
+              <Loader2 size={14} className="animate-spin flex-shrink-0" />
+              <span>Connecting to live sync server... (Free-tier instances may take a few moments to spin up)</span>
+            </div>
+          )}
+
           {/* YouTube URL Input Bar */}
           <div className="theme-card p-3 border theme-border rounded-2xl shadow-sm flex flex-col gap-2 transition-colors duration-200">
             <div className="flex items-center gap-2">
@@ -492,7 +504,7 @@ export function WatchRoom() {
                 ) : (
                   <Sparkles size={15} />
                 )}
-                <span>{canControlPlayback ? 'Load Video' : 'Request Video'}</span>
+                <span>{canControlPlayback ? 'Change Video' : 'Request Video'}</span>
               </button>
             </div>
 
@@ -607,7 +619,9 @@ export function WatchRoom() {
               <Hand size={14} />
               <span>Requests</span>
               {pendingRequests.length > 0 && (
-                <span className="w-2 h-2 rounded-full bg-amber-500 dark:bg-amber-400 animate-pulse" />
+                <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-white leading-none shadow-sm animate-pulse">
+                  {pendingRequests.length}
+                </span>
               )}
             </button>
           </div>

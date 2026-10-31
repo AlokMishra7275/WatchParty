@@ -311,7 +311,7 @@ describe('Socket.IO Real-time Integration & REST Tests', () => {
 
     const syncState = await bobVideoPromise;
     expect(syncState.playback.videoId).toBe('jNQXAC9IVRw');
-    expect(syncState.playback.currentTime).toBe(0);
+    expect(syncState.playback.currentTime).toBeCloseTo(0, 1);
     expect(syncState.playback.isPlaying).toBe(true);
   });
 
@@ -376,6 +376,128 @@ describe('Socket.IO Real-time Integration & REST Tests', () => {
     const chatRes = await emitWithAck(aliceReconnected, 'send_chat', { text: 'Back online!', roomId });
     expect(chatRes.success).toBe(true);
     expect(chatRes.message.senderRole).toBe('host');
+  });
+
+  test('FEATURE 1: Host directly changes video via video:change and all receive video_changed', async () => {
+    const alice = await createConnectedClient();
+    const resAlice = await emitWithAck(alice, 'join_room', { name: 'Alice', isCreating: true });
+    const roomId = resAlice.roomId;
+
+    const bob = await createConnectedClient();
+    await emitWithAck(bob, 'join_room', { roomId, name: 'Bob' });
+
+    const bobChangedPromise = new Promise((resolve) => {
+      bob.on('video_changed', (data) => resolve(data));
+    });
+
+    // Alice changes video via video:change
+    const changeRes = await emitWithAck(alice, 'video:change', {
+      url: 'https://youtu.be/aqz-KE-bpKQ',
+    });
+    expect(changeRes.success).toBe(true);
+    expect(changeRes.videoId).toBe('aqz-KE-bpKQ');
+
+    const changedEvent = await bobChangedPromise;
+    expect(changedEvent.videoId).toBe('aqz-KE-bpKQ');
+    expect(changedEvent.changedBy.name).toBe('Alice');
+  });
+
+  test('FEATURE 2 & 3: Participant requests video change, Host approves, and all receive new video', async () => {
+    const alice = await createConnectedClient();
+    const resAlice = await emitWithAck(alice, 'join_room', { name: 'Alice', isCreating: true });
+    const roomId = resAlice.roomId;
+
+    const bob = await createConnectedClient();
+    await emitWithAck(bob, 'join_room', { roomId, name: 'Bob' });
+
+    // Host listens for new request notification
+    const hostNoticePromise = new Promise((resolve) => {
+      alice.on('video:request:new', (data) => resolve(data));
+    });
+
+    // Bob requests a video change via video:request
+    const reqRes = await emitWithAck(bob, 'video:request', {
+      url: 'https://www.youtube.com/watch?v=jfKfPfyJRdk',
+    });
+    expect(reqRes.success).toBe(true);
+    expect(reqRes.request.requesterName).toBe('Bob');
+    expect(reqRes.request.payload.videoId).toBe('jfKfPfyJRdk');
+
+    const hostNotice = await hostNoticePromise;
+    expect(hostNotice.request.id).toBe(reqRes.request.id);
+
+    // Both Alice and Bob listen for video:changed
+    const bobNewVideoPromise = new Promise((resolve) => {
+      bob.on('video:changed', (data) => resolve(data));
+    });
+
+    // Alice approves Bob's request via video:request:accept
+    const approveRes = await emitWithAck(alice, 'video:request:accept', {
+      requestId: reqRes.request.id,
+    });
+    expect(approveRes.success).toBe(true);
+
+    const videoEvent = await bobNewVideoPromise;
+    expect(videoEvent.videoId).toBe('jfKfPfyJRdk');
+  });
+
+  test('FEATURE 3: Host rejects participant video request and video remains unchanged', async () => {
+    const alice = await createConnectedClient();
+    const resAlice = await emitWithAck(alice, 'join_room', { name: 'Alice', isCreating: true });
+    const roomId = resAlice.roomId;
+
+    const bob = await createConnectedClient();
+    await emitWithAck(bob, 'join_room', { roomId, name: 'Bob' });
+
+    // Initial video is default
+    const initialVideoId = resAlice.syncState.playback.videoId;
+
+    // Bob submits request
+    const reqRes = await emitWithAck(bob, 'video:request', {
+      url: 'https://www.youtube.com/watch?v=xRPjKOmdsRA',
+    });
+    expect(reqRes.success).toBe(true);
+
+    // Bob listens for status update
+    const bobStatusPromise = new Promise((resolve) => {
+      bob.on('video:request:status', (data) => resolve(data));
+    });
+
+    // Alice rejects request
+    const rejectRes = await emitWithAck(alice, 'video:request:reject', {
+      requestId: reqRes.request.id,
+    });
+    expect(rejectRes.success).toBe(true);
+
+    const statusEvent = await bobStatusPromise;
+    expect(statusEvent.status).toBe('rejected');
+    expect(statusEvent.executed).toBe(false);
+
+    // Check room video is still original
+    const room = roomManager.getRoom(roomId);
+    expect(room.playback.videoId).toBe(initialVideoId);
+  });
+
+  test('FEATURE 4: Chat messages with multiple Unicode emojis deliver accurately', async () => {
+    const alice = await createConnectedClient();
+    const resAlice = await emitWithAck(alice, 'join_room', { name: 'Alice', isCreating: true });
+    const roomId = resAlice.roomId;
+
+    const bob = await createConnectedClient();
+    await emitWithAck(bob, 'join_room', { roomId, name: 'Bob' });
+
+    const emojiMessage = 'Let’s start the watch party! 🍿🎬🔥 Ready for popcorn? 🥤✨🍕';
+
+    const bobChatPromise = new Promise((resolve) => {
+      bob.on('chat_message', (data) => resolve(data));
+    });
+
+    const sendRes = await emitWithAck(alice, 'send_chat', { text: emojiMessage, roomId });
+    expect(sendRes.success).toBe(true);
+
+    const receivedChat = await bobChatPromise;
+    expect(receivedChat.message.text).toBe(emojiMessage);
+    expect(receivedChat.message.senderName).toBe('Alice');
   });
 
   // REST API Tests

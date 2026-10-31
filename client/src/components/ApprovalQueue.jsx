@@ -1,6 +1,7 @@
 import React from 'react';
-import { Check, X, Clock, Hand, Film, Play, Pause, FastForward } from 'lucide-react';
+import { Check, X, Clock, Hand, Film, Play, Pause, FastForward, ExternalLink } from 'lucide-react';
 import { formatTimeAgo, formatDuration } from '../utils/formatters';
+import { getYouTubeThumbnail } from '../utils/youtube';
 
 export function ApprovalQueue({
   pendingRequests = [],
@@ -89,6 +90,40 @@ export function ApprovalQueue({
                   <span className="text-[10px] text-[var(--text-muted)]">{formatTimeAgo(req.createdAt)}</span>
                 </div>
 
+                {/* Change Video Details: Thumbnail & URL */}
+                {req.action === 'change_video' && req.payload?.videoId && (
+                  <div className="flex gap-2.5 p-2 rounded-xl bg-[var(--bg-card)] border theme-border items-center">
+                    <div className="relative w-20 h-12 flex-shrink-0 rounded-lg overflow-hidden bg-black/40 border theme-border">
+                      <img
+                        src={getYouTubeThumbnail(req.payload.videoId)}
+                        alt="Video Thumbnail"
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          e.target.style.display = 'none';
+                        }}
+                      />
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/20">
+                        <Film size={14} className="text-white drop-shadow" />
+                      </div>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <a
+                        href={req.payload.url || `https://www.youtube.com/watch?v=${req.payload.videoId}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1 truncate"
+                        title="Open on YouTube"
+                      >
+                        <span className="truncate">{req.payload.url || `https://youtu.be/${req.payload.videoId}`}</span>
+                        <ExternalLink size={11} className="flex-shrink-0 opacity-70" />
+                      </a>
+                      <span className="text-[10px] font-mono text-[var(--text-muted)] block mt-0.5">
+                        ID: {req.payload.videoId}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex items-center justify-between mt-1">
                   <div>{getActionBadge(req.action, req.payload)}</div>
 
@@ -96,16 +131,16 @@ export function ApprovalQueue({
                     <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => onApprove(req.id)}
-                        className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-sm transition-transform active:scale-95 cursor-pointer"
-                        title="Approve action"
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-sm transition-transform active:scale-95 cursor-pointer"
+                        title="Accept request"
                       >
                         <Check size={12} />
-                        <span>Approve</span>
+                        <span>Accept</span>
                       </button>
                       <button
                         onClick={() => onReject(req.id)}
-                        className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[var(--bg-card)] hover:bg-red-50 dark:hover:bg-red-950/80 text-[var(--text-muted)] hover:text-red-600 dark:hover:text-red-400 hover:border-red-300 dark:hover:border-red-500/40 border theme-border text-xs font-semibold transition-colors cursor-pointer"
-                        title="Reject action"
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[var(--bg-card)] hover:bg-red-50 dark:hover:bg-red-950/80 text-[var(--text-muted)] hover:text-red-600 dark:hover:text-red-400 hover:border-red-300 dark:hover:border-red-500/40 border theme-border text-xs font-semibold transition-colors cursor-pointer"
+                        title="Reject request"
                       >
                         <X size={12} />
                         <span>Reject</span>
@@ -113,16 +148,10 @@ export function ApprovalQueue({
                     </div>
                   ) : (
                     <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400/90 italic">
-                      Pending review...
+                      Pending Host Review...
                     </span>
                   )}
                 </div>
-
-                {req.action === 'change_video' && req.payload?.videoId && (
-                  <div className="text-[11px] text-[var(--text-muted)] bg-[var(--bg-surface)] p-2 rounded-lg border theme-border truncate font-mono">
-                    ID: {req.payload.videoId}
-                  </div>
-                )}
               </div>
             );
           })

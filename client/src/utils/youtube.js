@@ -27,20 +27,26 @@ export function extractYouTubeVideoId(input) {
     const host = url.hostname.toLowerCase().replace(/^www\./, '');
     let videoId = null;
 
-    if (host === 'youtube.com' || host === 'm.youtube.com') {
-      if (url.pathname === '/watch') {
+    const isYouTubeHost = [
+      'youtube.com',
+      'm.youtube.com',
+      'music.youtube.com',
+      'gaming.youtube.com',
+      'youtube-nocookie.com',
+    ].includes(host);
+
+    if (isYouTubeHost) {
+      const segments = url.pathname.split('/').filter(Boolean);
+      // 1. /watch?v=ID
+      if (url.pathname === '/watch' || segments[0] === 'watch') {
         videoId = url.searchParams.get('v');
-      } else if (url.pathname.startsWith('/shorts/')) {
-        const parts = url.pathname.split('/');
-        videoId = parts[2];
-      } else if (url.pathname.startsWith('/embed/')) {
-        const parts = url.pathname.split('/');
-        videoId = parts[2];
-      } else if (url.pathname.startsWith('/v/')) {
-        const parts = url.pathname.split('/');
-        videoId = parts[2];
+      }
+      // 2. /shorts/ID, /embed/ID, /v/ID, /live/ID
+      else if (segments.length >= 2 && ['shorts', 'embed', 'v', 'live'].includes(segments[0])) {
+        videoId = segments[1];
       }
     } else if (host === 'youtu.be') {
+      // 3. youtu.be/ID
       const parts = url.pathname.split('/').filter(Boolean);
       if (parts.length > 0) {
         videoId = parts[0];
@@ -51,8 +57,8 @@ export function extractYouTubeVideoId(input) {
       return { valid: true, videoId };
     }
 
-    return { valid: false, error: 'Please enter a valid YouTube watch, shorts, or youtu.be link.' };
-  } catch (err) {
+    return { valid: false, error: 'Please enter a valid YouTube watch, shorts, embed, or youtu.be link.' };
+  } catch (_err) {
     return { valid: false, error: 'Could not parse URL. Please check the link.' };
   }
 }
